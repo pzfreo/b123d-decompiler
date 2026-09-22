@@ -1,0 +1,6 @@
+file,status,iou,missing_pct,extra_pct,volume_error_pct,com_offset,hausdorff_max,ops,emitted,overlaps,failed,inert,skipped_total,association_area
+grm-GRM-05_depth_lock_bolt.step,ok,0.9924,0.001,0.762,0.761,0.0699,0.1248,5,4,0,0,1,0,0.943
+grm-GRM-03_thumbwheel_drive_screw.step,ok,0.9998,0.009,0.009,0.0,0.0004,0.3941,8,5,0,0,3,0,0.993
+grm-string_post.step,ok,0.9393,0.0,6.463,6.464,0.2377,0.6119,5,2,0,0,3,14,0.826
+cgb-flanged_spool_132.step,ok,0.8995,0.437,10.69,8.826,2.9277,16.145,55,52,14,0,3,38,0.603
+cgb-threaded_connector_109.step,ok,0.9378,0.008,6.629,6.622,7.6075,10.8806,73,26,1,0,11,203,0.855
