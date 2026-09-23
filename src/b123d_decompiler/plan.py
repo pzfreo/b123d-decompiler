@@ -8,6 +8,7 @@ one adapter rather than to "the pipeline".
 
 from __future__ import annotations
 
+import copy
 import itertools
 import math
 import time
@@ -20,6 +21,7 @@ from .geom import (
     Context,
     common_volume,
     dot,
+    is_sound,
     overlap_after_restore,
     run_source,
     shared_material,
@@ -345,6 +347,9 @@ def _silhouette_solid(part: Part, index: int, ctx: Context, deadline: float | No
         middle = (begin + stop) / 2
         gaps[widest : widest + 1] = [(begin, middle), (middle, stop)]
 
+    # Slice a copy. These booleans widen the tolerances of what they are given, and the
+    # part is the reference every later measurement is taken against.
+    scratch = copy.deepcopy(part)
     columns = []
     for start, finish in gaps:
         if deadline is not None and time.monotonic() > deadline:
@@ -356,7 +361,7 @@ def _silhouette_solid(part: Part, index: int, ctx: Context, deadline: float | No
         # at either end. Coincident faces make the intersection drop pieces, and a
         # slab that has lost a piece quietly hands back a stock full of holes.
         thickness[index] = (finish - start) * 0.5
-        piece = part & (Pos(*centre) * Box(*thickness))
+        piece = scratch & (Pos(*centre) * Box(*thickness))
         if piece is None or not piece.solids():
             continue
         faces = piece.faces().filter_by(axis)
@@ -509,7 +514,9 @@ def _silhouette_stock(ctx: Context) -> tuple[str, list[str], float] | None:
         drawn = run_source(code, "part")
     except Exception:  # noqa: BLE001 - a stock that will not run is not stock
         return None
-    if drawn is None or drawn.volume <= 0 or ctx.held_by(drawn) < HOLDS:
+    if drawn is None or drawn.volume <= 0 or not is_sound(drawn):
+        return None
+    if ctx.held_by(drawn) < HOLDS:
         return None
 
     names = ", ".join(_AXIS_NAMES[index] for index, _ in kept)
@@ -563,6 +570,17 @@ def _build_tools(ops: list[Op]) -> dict[int, Part]:
             if op.volume <= 1e-9:
                 op.status = model.INERT
                 op.note = "; ".join(filter(None, [op.note, "tool has no volume"]))
+                continue
+            # Check the tool is a sound solid before anything subtracts it. A tool
+            # with a self-intersecting face or an unsewn edge measures a plausible
+            # volume and then takes the whole process down inside the boolean, which
+            # costs the part its result entirely and leaves nothing to report. The
+            # check is a fraction of the cost of the boolean it stands in front of.
+            if not is_sound(tool):
+                op.status = model.FAILED
+                op.note = "; ".join(
+                    filter(None, [op.note, "the tool is not a sound solid"])
+                )
                 continue
             tools[position] = tool
         except Exception as error:  # noqa: BLE001 - any failure is a reportable outcome

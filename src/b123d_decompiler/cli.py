@@ -98,7 +98,7 @@ def cmd_part(args) -> int:
     run_one(
         Path(args.step), Path(args.output), samples=args.samples,
         keep_frame=args.keep_frame, drop_overlapping=args.drop_overlapping,
-        trim_faces=not args.no_trim,
+        trim_faces=not args.no_trim, verify=not args.no_verify,
     )
     return 0
 
@@ -120,10 +120,26 @@ def _run_isolated(step: Path, out_dir: Path, args) -> dict:
         command.append("--drop-overlapping")
     if args.no_trim:
         command.append("--no-trim")
-    done = subprocess.run(command, capture_output=True, text=True, check=False)
+
     report = out_dir / step.stem / "report.json"
-    if report.exists():
-        return json.loads(report.read_text())
+    report.unlink(missing_ok=True)  # so a report left by an earlier run is never read back
+    # Verification runs the whole sequence of ops as booleans to catch the one that
+    # empties the part, and on some geometry that is where the kernel dies rather
+    # than raises. A soundness check on the tool does not catch it: the shape the
+    # boolean chokes on is the part being built up, not the tool going in. So when
+    # the child dies, try once more without that pass. The plan then goes out with
+    # its ops unchecked, which the script itself will show, and that is a great deal
+    # better than no result at all for the part.
+    for extra in ([], ["--no-verify"]):
+        done = subprocess.run(command + extra, capture_output=True, text=True, check=False)
+        if report.exists():
+            record = json.loads(report.read_text())
+            if extra:
+                record["unverified"] = "the kernel crashed while checking the ops"
+            return record
+        if done.returncode >= 0:
+            break  # it failed without crashing, so running it again will not help
+
     reason = "the CAD kernel crashed" if done.returncode < 0 else "no report was written"
     tail = "\n".join(done.stderr.strip().splitlines()[-4:])
     return {"file": step.name, "status": "crashed", "error": f"{reason}: {tail}"[:800]}
@@ -225,6 +241,7 @@ def build_parser() -> argparse.ArgumentParser:
     part.add_argument("--keep-frame", action="store_true")
     part.add_argument("--drop-overlapping", action="store_true")
     part.add_argument("--no-trim", action="store_true")
+    part.add_argument("--no-verify", action="store_true")
     part.set_defaults(func=cmd_part)
     return parser
 

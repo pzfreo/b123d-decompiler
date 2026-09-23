@@ -1442,24 +1442,51 @@ def _bore_trim(face, ctx: Context, index: int) -> Op | None:
     if ctx.inside_solid(inside):
         return None
 
-    box = face.bounding_box()
-    corners = [
-        (x, y, z)
-        for x in (box.min.X, box.max.X)
-        for y in (box.min.Y, box.max.Y)
-        for z in (box.min.Z, box.max.Z)
-    ]
-    reach = [dot(corner, along) for corner in corners]
-    low, high = min(reach) - 1e-3, max(reach) + 1e-3
-    base = tuple(anchor[k] + along[k] * (low - dot(anchor, along)) for k in range(3))
+    # Cut only the space the wall actually faces. A curved wall is often a slice of a
+    # large cylinder rather than a whole bore, and cutting the whole cylinder for it
+    # runs straight through the part on the far side of the axis. The face's own
+    # parameter range gives the arc it spans and the length it runs along the axis,
+    # so the tool is the pie slice between that arc and the axis, and nothing more.
+    from OCP.BRepTools import BRepTools
+
+    u_low, u_high, v_low, v_high = BRepTools.UVBounds_s(face.wrapped)
+    position = cylinder.Position()
+    x_axis = position.XDirection()
+    across = (x_axis.X(), x_axis.Y(), x_axis.Z())
+    base = tuple(anchor[k] + along[k] * (v_low - 1e-3) for k in range(3))
+    length = (v_high - v_low) + 2e-3
     label = f"clear an unrecognised bore \u00d8{fmt(2 * radius, 3)}"
-    code = [
-        f"_bore = Plane(origin={fmt_tuple(base)}, z_dir={fmt_tuple(along)})",
-        (
-            f"tool = _bore * Cylinder({fmt(radius)}, {fmt(high - low)}, "
-            f"align=(Align.CENTER, Align.CENTER, Align.MIN))"
-        ),
-    ]
+
+    if u_high - u_low >= 2 * math.pi - 1e-6:
+        code = [
+            (
+                f"_bore = Plane(origin={fmt_tuple(base)}, x_dir={fmt_tuple(across)}, "
+                f"z_dir={fmt_tuple(along)})"
+            ),
+            (
+                f"tool = _bore * Cylinder({fmt(radius)}, {fmt(length)}, "
+                f"align=(Align.CENTER, Align.CENTER, Align.MIN))"
+            ),
+        ]
+    else:
+
+        def rim(angle):
+            return (radius * math.cos(angle), radius * math.sin(angle))
+
+        first, middle, last = rim(u_low), rim((u_low + u_high) / 2), rim(u_high)
+        label += f", {fmt(math.degrees(u_high - u_low), 3)}\u00b0 of it"
+        code = [
+            (
+                f"_bore = Plane(origin={fmt_tuple(base)}, x_dir={fmt_tuple(across)}, "
+                f"z_dir={fmt_tuple(along)})"
+            ),
+            (
+                f"_prof = Line((0, 0), {fmt_tuple(first)}) + ThreePointArc("
+                f"{fmt_tuple(first)}, {fmt_tuple(middle)}, {fmt_tuple(last)}) + "
+                f"Line({fmt_tuple(last)}, (0, 0))"
+            ),
+            f"tool = extrude(_bore * make_face(_prof), amount={fmt(length)})",
+        ]
     return Op("cut", "unclaimed_faces", index, label, code, speculative=True)
 
 

@@ -212,6 +212,24 @@ class Context:
         )
 
 
+def is_sound(shape) -> bool:
+    """Whether the kernel considers a shape well enough formed to use.
+
+    A boolean against a malformed solid does not raise, it takes the process down,
+    and a process that goes down takes the whole part's result with it. Asking the
+    kernel first turns that into an op this tool can skip and report.
+    """
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    try:
+        wrapped = shape.wrapped
+        if wrapped is None or wrapped.IsNull():
+            return False
+        return bool(BRepCheck_Analyzer(wrapped).IsValid())
+    except Exception:  # noqa: BLE001 - a shape the checker will not even read is not sound
+        return False
+
+
 def run_source(code: list[str], name: str = "tool") -> Part:
     """Execute generated source and return the shape it binds to `name`."""
     import build123d
@@ -262,10 +280,29 @@ def _plain_common(a, b, fuzzy: float = 0.0):
     tools.Append(b)
     builder.SetArguments(arguments)
     builder.SetTools(tools)
+    # By default a boolean may widen the tolerances of the shapes it is given, in
+    # place. Against the reference part that is ruinous: every measurement taken on
+    # it loosens it a little, a fuzzy retry loosens it a lot, and after a few hundred
+    # of them the classifier calls every nearby point "on" the part and intersections
+    # come back empty. Measuring must never change the thing being measured.
+    builder.SetNonDestructive(True)
     if fuzzy:
         builder.SetFuzzyValue(fuzzy)
     builder.Build()
     return builder.Shape() if builder.IsDone() else None
+
+
+def common_part(a: Part, b: Part) -> Part | None:
+    """The intersection of two solids as a Part, leaving both exactly as they were."""
+    shape = _plain_common(a.wrapped, b.wrapped)
+    if shape is None or shape.IsNull():
+        return None
+    return Part(shape)
+
+
+#: An intersection smaller than this share of the cut tool is about to let the tool
+#: pass as empty, so it is the point at which the reading has to be checked by hand.
+SUSPECT_SHARE = 0.05
 
 
 def robust_common(a, b) -> tuple[object | None, str]:
@@ -314,20 +351,75 @@ def shared_material(tool: Part, other: Part, reference: Part) -> tuple[float, fl
     return _volume(shared), (_volume(material) if material is not None else 0.0)
 
 
+def sampled_overlap_volume(tool: Part, reference: Part, restorers, points: int = 900) -> float:
+    """How much of `tool` covers reference material, counted rather than intersected.
+
+    Throwing points at the problem is coarse next to a boolean, but it cannot come
+    back with the wrong answer and no warning, which is the failure that matters here:
+    a tool whose wall lies exactly on a face of the part is the case the kernel gets
+    wrong, and it is also the most common shape of trim this tool proposes.
+    """
+    import random
+
+    box = tool.bounding_box()
+    low = (box.min.X, box.min.Y, box.min.Z)
+    high = (box.max.X, box.max.Y, box.max.Z)
+    span = [high[k] - low[k] for k in range(3)]
+    if min(span) <= 0:
+        return 0.0
+
+    in_tool = Context(tool).inside_solid
+    in_reference = Context(reference).inside_solid
+    in_restorer = [Context(restorer).inside_solid for restorer in restorers]
+
+    generator = random.Random(20260922)  # a fixed stream keeps the number repeatable
+    hits = shared = 0
+    for _ in range(points):
+        place = tuple(generator.uniform(low[k], high[k]) for k in range(3))
+        if not in_tool(place):
+            continue
+        hits += 1
+        if in_reference(place) and not any(back(place) for back in in_restorer):
+            shared += 1
+    if not hits:
+        return 0.0
+    return float(tool.volume) * shared / hits
+
+
 def overlap_after_restore(tool: Part, reference: Part, restorers) -> float:
     """Volume of `tool` that eats reference material no restorer puts back.
 
     A cut through a pin standing in a bore overlaps material legitimately, because a
     later fuse returns it. Measuring the cut alone would call that op wrong.
+
+    A boolean that fails here is not an answer of zero. Read that way it says the tool
+    is free to cut, which is the one conclusion a failed measurement must never be
+    allowed to reach, and it is exactly what a tool with a wall lying on a face of the
+    part provokes. So whenever the intersection comes back small enough for the tool
+    to pass as empty, the answer is checked by counting points instead, and the larger
+    of the two readings is the one returned.
     """
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
 
+    measured = 0.0
     shape = _common(tool.wrapped, reference.wrapped)
-    if shape is None:
-        return 0.0
-    for restorer in restorers:
-        cut = BRepAlgoAPI_Cut(shape, restorer.wrapped)
-        if not cut.IsDone():
-            return _volume(shape)
-        shape = cut.Shape()
-    return _volume(shape)
+    if shape is not None:
+        for restorer in restorers:
+            cut = BRepAlgoAPI_Cut(shape, restorer.wrapped)
+            if not cut.IsDone():
+                break
+            shape = cut.Shape()
+        measured = _volume(shape)
+    if not _boxes_meet(tool.wrapped, reference.wrapped):
+        return measured
+    # The boolean fails in both directions on these tools: sometimes it finds nothing
+    # where the tool plainly cuts material, sometimes it hands back the whole tool
+    # where the tool is almost entirely clear. Only the count can tell which, so the
+    # count always runs. Where the two agree the larger is kept, since a cut that
+    # might eat material has to be treated as eating it; where they disagree the
+    # count wins, because it has no way to fail silently and the boolean does.
+    counted = sampled_overlap_volume(tool, reference, restorers)
+    size = float(tool.volume)
+    if abs(measured - counted) <= max(SUSPECT_SHARE * size, 0.5 * max(measured, counted)):
+        return max(measured, counted)
+    return counted
