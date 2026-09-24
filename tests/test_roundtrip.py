@@ -259,3 +259,20 @@ def test_a_rounded_slot_cut_along_y_is_not_mirrored():
     assert abs(box.min.Z - -63.02) < 1e-3 and abs(box.max.Z - 14.98) < 1e-3
     assert abs(box.min.X - -24.99) < 1e-3 and abs(box.max.X - 25.01) < 1e-3
     assert abs(box.min.Y - -14.61) < 1e-3 and abs(box.max.Y - 0.39) < 1e-3
+
+
+def test_an_unverified_plan_still_builds_its_features(tmp_path):
+    """When checking the ops is not possible, the recognised features still go in.
+
+    The batch retries a part without verification after the kernel crashes in it. For
+    a while that plan emitted nothing at all, because only a checked op is emitted,
+    and the part came back as bare stock.
+    """
+    from b123d_decompiler.pipeline import decompile
+
+    step = tmp_path / "pocket.step"
+    export_step(pocket(), str(step))
+    plan, _source = decompile(step, tmp_path / "pocket.py", verify=False)
+    features = [op for op in plan.ops if not op.speculative]
+    assert features and all(op.emitted for op in features)
+    assert not any(op.emitted for op in plan.ops if op.speculative)

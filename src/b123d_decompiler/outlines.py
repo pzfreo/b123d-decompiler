@@ -22,6 +22,7 @@ samples. They are only estimates; the billet that is built is held to the exact 
 from __future__ import annotations
 
 import itertools
+import math
 
 import numpy as np
 
@@ -199,45 +200,6 @@ class OutlineEstimator:
 EXTRUSION_COST = 0.03
 
 
-def ranked(candidates: list[Outline], low, high, gain: float, most_extrusions: int,
-           points: int = 40000) -> list[list[Outline]]:
-    """Combinations of outlines a designer might have started from, most plausible first.
-
-    Each candidate is tried as the first outline, and others are intersected with it
-    in order of size while each takes away at least `1 - gain` of what is left, the
-    whole stays within `most_extrusions`, and no axis is used twice. Every combination
-    is scored by its volume with each extrusion charged EXTRUSION_COST of it. These
-    are estimates from rasters and can rank close candidates wrongly, so the caller
-    builds the first few and measures them.
-    """
-    low, high = np.asarray(low), np.asarray(high)
-    places = np.random.default_rng(20260924).uniform(low, high, size=(points, 3))
-    usable = [c for c in candidates if c.extrusions <= most_extrusions]
-    if not usable:
-        return []
-    inside = {id(c): c.contains(places) for c in usable}
-    usable.sort(key=lambda c: inside[id(c)].sum())
-
-    found = {}
-    for first in usable:
-        chosen, current, extrusions = [first], inside[id(first)].copy(), first.extrusions
-        for candidate in usable:
-            if candidate is first or extrusions + candidate.extrusions > most_extrusions:
-                continue
-            if any(taken.index == candidate.index for taken in chosen):
-                continue  # two outlines along one axis are just a finer stepping
-            merged = current & inside[id(candidate)]
-            if merged.sum() > current.sum() * gain:
-                continue
-            chosen.append(candidate)
-            current, extrusions = merged, extrusions + candidate.extrusions
-        key = tuple(sorted(id(c) for c in chosen))
-        score = current.sum() * (1 + EXTRUSION_COST * extrusions)
-        if key not in found or score < found[key][0]:
-            found[key] = (score, chosen)
-    return [chosen for _score, chosen in sorted(found.values(), key=lambda entry: entry[0])]
-
-
 # ── building the chosen outline ─────────────────────────────────────────
 
 
@@ -385,7 +347,79 @@ def outline_polygons(triangles: np.ndarray, index: int, tolerance: float,
     ]
 
 
-def polygon_source(pieces, index: int, target: str) -> list[str]:
+def _circle(a, b, c):
+    """Centre and radius of the circle through three points, or None if they are in line."""
+    ax, ay = a
+    bx, by = b
+    cx, cy = c
+    d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    if abs(d) < 1e-12:
+        return None
+    ux = ((ax * ax + ay * ay) * (by - cy) + (bx * bx + by * by) * (cy - ay) + (cx * cx + cy * cy) * (ay - by)) / d
+    uy = ((ax * ax + ay * ay) * (cx - bx) + (bx * bx + by * by) * (ax - cx) + (cx * cx + cy * cy) * (bx - ax)) / d
+    return (ux, uy), math.dist((ux, uy), a)
+
+
+def _arcs_and_lines(points: list, tolerance: float) -> list:
+    """An outline as the lines and arcs a designer would have drawn it with.
+
+    Simplifying a curve leaves a run of short chords. Where a run of at least four
+    vertices lies on one circle to within the tolerance, and turns less than half a
+    circle, it is written as one arc through its ends and its middle vertex. That is
+    one curved face on the billet instead of a dozen flat ones, which is both closer
+    to the drawing and far kinder to every boolean that follows.
+    """
+    count = len(points)
+    segments, start = [], 0
+    while start < count:
+        best = start + 1
+        # A run may end on the starting vertex but never pass it, or the outline
+        # would overlap its own beginning instead of closing on it.
+        for end in range(start + 3, min(count, start + 63) + 1):
+            run = [points[k % count] for k in range(start, end + 1)]
+            fit = _circle(run[0], run[len(run) // 2], run[-1])
+            if fit is None:
+                break
+            centre, radius = fit
+            if radius > 1e6 * tolerance:
+                break
+            if any(abs(math.dist(centre, p) - radius) > tolerance for p in run):
+                break
+            if math.dist(run[0], run[-1]) < 1e-9:
+                break
+            steps = [
+                math.atan2(
+                    (p[0] - centre[0]) * (q[1] - centre[1]) - (p[1] - centre[1]) * (q[0] - centre[0]),
+                    (p[0] - centre[0]) * (q[0] - centre[0]) + (p[1] - centre[1]) * (q[1] - centre[1]),
+                )
+                for p, q in itertools.pairwise(run)
+            ]
+            # Every step has to turn the same way. A thin spike runs out and back, and
+            # its vertices can sit near one wide circle while the turning cancels out;
+            # drawn as an arc it cuts straight across the part.
+            if not (all(step > 0 for step in steps) or all(step < 0 for step in steps)):
+                break
+            # Under half a circle, where three points pin the arc down.
+            if abs(sum(steps)) >= math.pi * 0.95:
+                break
+            # The vertices sit on the circle, but after simplifying they can be far apart,
+            # and between two of them the outline is a straight chord. The arc bows away
+            # from each chord by its sagitta, which must stay inside the tolerance too;
+            # on a plate eight millimetres of bow took a tenth of the part away.
+            if any(radius * (1 - math.cos(abs(step) / 2)) > tolerance for step in steps):
+                break
+            best = end
+        if best - start >= 3:
+            run = [points[k % count] for k in range(start, best + 1)]
+            segments.append(("arc", run[0], run[len(run) // 2], run[-1]))
+        else:
+            best = start + 1
+            segments.append(("line", points[start % count], points[best % count]))
+        start = best
+    return segments
+
+
+def polygon_source(pieces, index: int, target: str, tolerance: float = 1e-3) -> list[str]:
     """Source for a billet drawn as polygons, each extruded across its stretch.
 
     `pieces` is a list of (start, length, polygons). One statement draws each outline
@@ -399,10 +433,18 @@ def polygon_source(pieces, index: int, target: str) -> list[str]:
     for start, length, polygons in pieces:
         origin = tuple(start if k == index else 0.0 for k in range(3))
         for polygon in polygons:
-            points = [fmt_tuple((u, v)) for u, v in list(polygon.exterior.coords)[:-1]]
-            rows = [", ".join(points[i : i + 6]) for i in range(0, len(points), 6)]
-            joined = ",\n    ".join(rows)
-            code.append(f"_prof = Polyline(\n    {joined},\n    close=True,\n)")
+            corners = [(float(u), float(v)) for u, v in list(polygon.exterior.coords)[:-1]]
+            drawn = []
+            for segment in _arcs_and_lines(corners, tolerance):
+                if segment[0] == "line":
+                    drawn.append(f"Line({fmt_tuple(segment[1])}, {fmt_tuple(segment[2])})")
+                else:
+                    drawn.append(
+                        f"ThreePointArc({fmt_tuple(segment[1])}, {fmt_tuple(segment[2])}, "
+                        f"{fmt_tuple(segment[3])})"
+                    )
+            joined = "\n    + ".join(drawn)
+            code.append(f"_prof = (\n    {joined}\n)")
             code.append(
                 f"_plane = Plane(origin={fmt_tuple(origin)}, x_dir={fmt_tuple(x_dir)}, "
                 f"z_dir={fmt_tuple(z_dir)})"

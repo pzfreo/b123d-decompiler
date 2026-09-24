@@ -12,6 +12,7 @@ import itertools
 import math
 import time
 
+import numpy as np
 from build123d import Part
 
 from .geom import Context, dot, is_sound, run_source
@@ -318,9 +319,6 @@ HOLDS = 0.995
 #: Most places along an axis a stepped billet may choose its steps from.
 SLICE_LIMIT = 120
 
-#: A second silhouette earns its place in the script only by this much.
-SHADOW_GAIN = 0.98
-
 #: Seconds to spend building outline billets before settling for what else there is.
 STOCK_BUDGET = 240.0
 
@@ -352,7 +350,10 @@ def _outline_source(outline, ctx: Context):
     from .outlines import outline_polygons, polygon_source
 
     triangles = _mesh_for(ctx.part).triangles
-    tolerance = max(ctx.diagonal * DEFLECTION_SHARE, 1e-4)
+    # Coarser than the mesh by a margin. A billet drawn to the mesh's own tolerance has
+    # hundreds of flat sides on every curve, and every boolean against the part it
+    # becomes then crawls: one cut in the sequence check ran for six minutes.
+    tolerance = max(ctx.diagonal * OUTLINE_TOLERANCE_SHARE, 5 * ctx.diagonal * DEFLECTION_SHARE)
     index = outline.index
     envelope = (ctx.bb_min, ctx.bb_max)
     if outline.kind == "shadow":
@@ -372,8 +373,32 @@ def _outline_source(outline, ctx: Context):
     drawn = sum(len(polygons) for _start, _length, polygons in pieces)
     if drawn == 0 or drawn > MOST_EXTRUSIONS:
         return None
-    return lambda target: polygon_source(pieces, index, target)
+    return lambda target: polygon_source(pieces, index, target, tolerance)
 
+
+#: What each line or arc in a billet's outlines adds to its cost, as a share of it.
+SEGMENT_COST = 0.002
+
+
+def _complexity(code: list[str]) -> float:
+    """How much harder a billet is to draw than a plain block, as a factor on its volume.
+
+    Every extrusion is charged, and so is every line and arc in the outlines extruded.
+    A billet that traces every small round and pocket can come out tight and still be
+    nothing a designer drew: on one part it took 245 lines, gave the part a billet of
+    288 faces, and every boolean after it crawled until the kernel gave up. Small
+    features are what the feature ops and the trims are for.
+    """
+    from .outlines import EXTRUSION_COST
+
+    text = "\n".join(code)
+    extrusions = max(1, text.count("extrude("))
+    segments = text.count("Line(") + text.count("Arc(")
+    return 1 + EXTRUSION_COST * extrusions + SEGMENT_COST * segments
+
+
+#: How closely an outline billet follows the part, as a share of its diagonal.
+OUTLINE_TOLERANCE_SHARE = 1e-3
 
 #: Most extrusions an outline billet may take before it stops being the billet a
 #: designer would draw and becomes a tracing of the part.
@@ -401,34 +426,57 @@ def _silhouette_stock(ctx: Context) -> tuple[str, list[str], float] | None:
     whole part is kept.
     """
     from .geom import _mesh_for
-    from .outlines import EXTRUSION_COST, OutlineEstimator, ranked
+    from .outlines import OutlineEstimator
 
     marks = {}
     for index in range(3):
         gaps, tiled = _slice_gaps(ctx.part, index, ctx)
         marks[index] = ([g[0] for g in gaps] + [gaps[-1][1]]) if (gaps and tiled) else []
     estimator = OutlineEstimator(_mesh_for(ctx.part), ctx.bb_min, ctx.bb_max, marks)
-    combinations = ranked(
-        estimator.candidates(), ctx.bb_min, ctx.bb_max, SHADOW_GAIN, MOST_EXTRUSIONS
-    )
+    candidates = estimator.candidates()
+
+    # Draw every outline first: it is 2D work and cheap next to building one.
+    sources: dict = {}
+    written: dict = {}
+    for outline in candidates:
+        try:
+            source = _outline_source(outline, ctx)
+            text = source("_shadow") if source is not None else None
+        except Exception:  # noqa: BLE001 - an outline that will not draw is not used
+            source, text = None, None
+        if text:
+            sources[id(outline)], written[id(outline)] = source, text
+
+    # Every combination of at most one outline per axis, scored by counting points
+    # against all of them at once and charged for how much drawing it takes. There
+    # are only a few hundred, and trying them all is what finds the plain ones: a
+    # greedy search starting from the smallest never reached three plain shadows.
+    places = np.random.default_rng(20260924).uniform(ctx.bb_min, ctx.bb_max, size=(40000, 3))
+    box = math.prod(ctx.bb_max[k] - ctx.bb_min[k] for k in range(3))
+    inside = {id(c): c.contains(places) for c in candidates if id(c) in sources}
+    per_axis = [
+        [None] + [c for c in candidates if c.index == index and id(c) in sources]
+        for index in range(3)
+    ]
+    scored = []
+    for combination in itertools.product(*per_axis):
+        chosen = [outline for outline in combination if outline is not None]
+        if not chosen:
+            continue
+        code = [line for outline in chosen for line in written[id(outline)]]
+        if "\n".join(code).count("extrude(") > MOST_EXTRUSIONS:
+            continue
+        held = np.logical_and.reduce([inside[id(outline)] for outline in chosen])
+        scored.append((held.mean() * box * _complexity(code), chosen))
+    scored.sort(key=lambda entry: entry[0])
+    drawable = [chosen for _cost, chosen in scored]
 
     stop_at = time.monotonic() + STOCK_BUDGET
-    sources: dict = {}
     best, tried = None, 0
-    for chosen in combinations:
+    for chosen in drawable:
         if tried >= BUILT_COMBINATIONS or time.monotonic() > stop_at:
             break
-        writers = []
-        for outline in chosen:
-            if id(outline) not in sources:
-                try:
-                    source = _outline_source(outline, ctx)
-                    sources[id(outline)] = source if source and source("_shadow") else None
-                except Exception:  # noqa: BLE001 - an outline that will not draw is not used
-                    sources[id(outline)] = None
-            writers.append(sources[id(outline)])
-        if any(writer is None for writer in writers):
-            continue
+        writers = [sources[id(outline)] for outline in chosen]
         tried += 1
         code = writers[0]("part")
         for writer in writers[1:]:
@@ -444,8 +492,7 @@ def _silhouette_stock(ctx: Context) -> tuple[str, list[str], float] | None:
             continue
         if ctx.held_by(drawn) < HOLDS:
             continue
-        extrusions = sum(line.count("extrude(") for line in code)
-        cost = float(drawn.volume) * (1 + EXTRUSION_COST * extrusions)
+        cost = float(drawn.volume) * _complexity(code)
         if best is None or cost < best[0]:
             names = ", ".join(outline.name for outline in chosen)
             best = (cost, f"stock: the part's own outline, {names}", code, float(drawn.volume))
@@ -535,8 +582,12 @@ def stock_source(ctx: Context, document: dict) -> tuple[str, list[str]]:
         except Exception:  # noqa: BLE001 - an unusable profile just means the envelope
             continue
         if turned is not None:
-            candidates.append((run_source(turned[1], "part").volume, turned))
-            break
+            # Quiddity reads this part as turned, and a bar turned from its profile holds
+            # the whole part: that is how it was made, so that is the billet. An outline
+            # can come out smaller overall and still start worse, because its few steps
+            # cannot follow a turned profile: on a flanged spool it left a ring round
+            # the body between the flanges that nothing after it removes.
+            return turned
     if not candidates:
         try:
             own = _self_turned_stock(ctx)
@@ -563,6 +614,5 @@ def _drawing_cost(volume: float, stock) -> float:
     """
     from .outlines import EXTRUSION_COST
 
-    _label, code = stock
-    pieces = 1 if "turned" in _label else max(1, sum(line.count("extrude(") for line in code))
-    return volume * (1 + EXTRUSION_COST * pieces)
+    label, code = stock
+    return volume * (1 + EXTRUSION_COST if "turned" in label else _complexity(code))

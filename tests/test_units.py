@@ -74,3 +74,21 @@ def test_only_buildable_ops_reach_the_script():
     assert not Op("cut", "f", 0, "l", [], status="inert").emitted
     assert not Op("cut", "f", 0, "l", [], status="failed").emitted
     assert not Op("cut", "f", 0, "l", [], status="planned").emitted
+
+
+def test_an_outline_written_as_arcs_and_lines_closes_on_itself():
+    """Arc runs near the end of an outline must stop at its start, not overlap it."""
+    import math
+
+    from b123d_decompiler.outlines import _arcs_and_lines
+
+    points = []
+    # A disc sampled from a point on it, so the last run is an arc back to the first.
+    for k in range(48):
+        a = 2 * math.pi * k / 48
+        points.append((10 * math.cos(a), 10 * math.sin(a)))
+    segments = _arcs_and_lines(points, 0.01)
+    ends = [segment[-1] for segment in segments]
+    starts = [segment[1] for segment in segments]
+    assert starts[0] == points[0] and ends[-1] == points[0]
+    assert all(ends[i] == starts[i + 1] for i in range(len(segments) - 1))

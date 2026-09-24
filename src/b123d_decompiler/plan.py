@@ -176,6 +176,27 @@ def _reject_destructive(plan: BuildPlan, tools: dict[int, Part], stock: Part) ->
         part = candidate
 
 
+def _accept_unverified(plan: BuildPlan) -> None:
+    """Settle ops without checking them against the reference, when that is not possible.
+
+    This is the plan a part gets when checking crashed the kernel. Every tool is still
+    built, which needs no boolean against the part, so one that will not build or has
+    no volume is left out. The recognised features then go in: they are the design
+    intent, and a plan without them is just a billet. The speculative trims stay out,
+    since the only thing that made them safe was the check that could not run.
+    """
+    _build_tools(plan.ops)
+    for op in plan.ops:
+        if op.status != model.PLANNED:
+            continue
+        if op.speculative:
+            op.status = model.UNPROVED
+            op.note = "; ".join(filter(None, [op.note, "not checked, so not used"]))
+        else:
+            op.status = model.OK
+            op.note = "; ".join(filter(None, [op.note, "not checked against the part"]))
+
+
 def _verify(plan: BuildPlan, ctx: Context) -> None:
     """Judge every op against the reference, then against the sequence it belongs to.
 
@@ -300,6 +321,8 @@ def build_plan(
 
     if verify:
         _verify(plan, ctx)
+    else:
+        _accept_unverified(plan)
 
     # Cuts first, coarse to fine, then the additive ops that put material back.
     # Quiddity reports evidence, not history, so there is no recorded order to
