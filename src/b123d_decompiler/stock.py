@@ -376,6 +376,9 @@ def _outline_source(outline, ctx: Context):
     return lambda target: polygon_source(pieces, index, target, tolerance)
 
 
+#: An outline must be under this share of a turned bar's volume to be taken instead.
+TURNED_MARGIN = 0.8
+
 #: What each line or arc in a billet's outlines adds to its cost, as a share of it.
 SEGMENT_COST = 0.002
 
@@ -583,10 +586,14 @@ def stock_source(ctx: Context, document: dict) -> tuple[str, list[str]]:
             continue
         if turned is not None:
             # Quiddity reads this part as turned, and a bar turned from its profile holds
-            # the whole part: that is how it was made, so that is the billet. An outline
-            # can come out smaller overall and still start worse, because its few steps
-            # cannot follow a turned profile: on a flanged spool it left a ring round
-            # the body between the flanges that nothing after it removes.
+            # the whole part. An outline has to be clearly smaller to be preferred: its few
+            # steps cannot follow a turned profile, and on a flanged spool an outline 1 %
+            # smaller left a ring round the body that nothing after it removed. But a
+            # profile can describe only part of the body, and then the bar is far too big.
+            turned_volume = run_source(turned[1], "part").volume
+            outline = _isolated_silhouette_stock(ctx)
+            if outline is not None and outline[2] < TURNED_MARGIN * turned_volume:
+                return outline[0], outline[1]
             return turned
     if not candidates:
         try:
