@@ -67,7 +67,8 @@ class Outline:
 
     @property
     def name(self) -> str:
-        return f"{self.kind} along {'xyz'[self.index]}"
+        steps = f" in {self.extrusions} steps" if self.kind == "stepped" else ""
+        return f"{self.kind} along {'xyz'[self.index]}{steps}"
 
 
 class OutlineEstimator:

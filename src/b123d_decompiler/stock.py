@@ -646,7 +646,13 @@ def stock_candidates(ctx: Context, document: dict) -> list[tuple[str, list[str]]
     for label, code, volume in _isolated_silhouette_stock(ctx):
         candidates.append((volume, (label, code)))
     candidates.sort(key=lambda entry: _drawing_cost(*entry))
-    chosen = [stock for _volume, stock in candidates]
+    # Two billets of the same volume are the same billet drawn two ways, and trying
+    # both spends a trial on nothing new: keep the one that is cheaper to draw.
+    distinct = []
+    for volume, stock in candidates:
+        if all(abs(volume - other) > 1e-3 * max(volume, other) for other, _stock in distinct):
+            distinct.append((volume, stock))
+    chosen = [stock for _volume, stock in distinct]
     # A turned bar is always tried, whatever its place in the order.
     turned_first = [stock for stock in chosen if "turned" in stock[0]][:1]
     rest = [stock for stock in chosen if stock not in turned_first]
