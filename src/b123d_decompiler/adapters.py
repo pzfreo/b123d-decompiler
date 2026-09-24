@@ -172,6 +172,46 @@ def _best_closure(boundary, closure, geometry, origin, run, u_dir, low, high, ct
     return choice
 
 
+def _open_end_reach(boundary, closure, side, origin, run, u_dir, at, sign, most, ctx) -> float:
+    """How far past an open end the recess can run before it meets material again.
+
+    "Open" says there is space just beyond the end, not that the space goes on to the
+    outside of the part. A short channel can open into a pocket or a step, and running
+    it on to the envelope carries it straight through whatever lies past that. So the
+    profile is swept beyond the end and the farthest length that stays empty in the
+    reference is kept, found by halving.
+    """
+    from .geom import overlap_after_restore
+
+    def clean(length: float) -> bool:
+        start = at if sign > 0 else at - length
+        base = tuple(origin[k] + run[k] * start for k in range(3))
+        try:
+            tool = run_source(_recess_code(boundary, closure, 0.0, base, u_dir, run, length, side))
+            volume = float(tool.volume)
+            if volume <= 0:
+                return False
+            return overlap_after_restore(tool, ctx.part, []) <= _OPEN_END_TOLERANCE * volume
+        except Exception:  # noqa: BLE001 - an extension that will not build is not taken
+            return False
+
+    if most <= 0 or clean(most):
+        return max(most, 0.0)
+    near, far = 0.0, most
+    for _ in range(8):
+        middle = (near + far) / 2
+        if clean(middle):
+            near = middle
+        else:
+            far = middle
+    return near
+
+
+#: An open end's extension may touch this share of its own volume in material and
+#: still count as running through space: the recess wall and the part's face coincide.
+_OPEN_END_TOLERANCE = 0.02
+
+
 def section_recess(feature: dict, ctx: Context) -> Op | None:
     record = feature["record"]
     geometry = record["geometry"]
@@ -182,13 +222,27 @@ def section_recess(feature: dict, ctx: Context) -> Op | None:
     notes = []
 
     box_low, box_high = ctx.extent_along(run)
-    for side in ("low", "high"):
-        end = geometry["ends"][side]
+    boundary = geometry["profile"]["boundary"]
+    closure = geometry["profile"]["closure"]
+    side = geometry["profile"].get("material_side")
+    recorded = (low, high)
+    for which in ("low", "high"):
+        end = geometry["ends"][which]
         if end["condition"] == "open":
-            if side == "low":
-                low = min(low, box_low - ctx.margin)
+            if which == "low":
+                reach = _open_end_reach(
+                    boundary, closure, side, origin, run, u_dir, recorded[0],
+                    -1.0, recorded[0] - (box_low - ctx.margin), ctx,
+                )
+                low = recorded[0] - reach
             else:
-                high = max(high, box_high + ctx.margin)
+                reach = _open_end_reach(
+                    boundary, closure, side, origin, run, u_dir, recorded[1],
+                    1.0, (box_high + ctx.margin) - recorded[1], ctx,
+                )
+                high = recorded[1] + reach
+            if reach < (recorded[0] - box_low if which == "low" else box_high - recorded[1]):
+                notes.append(f"{which} end open onto a space inside the part, run stops there")
             continue
         surface = end["surface"]
         gradient = surface.get("gradient") or (0.0, 0.0)
@@ -198,9 +252,6 @@ def section_recess(feature: dict, ctx: Context) -> Op | None:
             notes.append(f"{side} cap is sloped, modelled flat")
 
     # dot(origin, run) is zero by construction, so the run interval is absolute.
-    boundary = geometry["profile"]["boundary"]
-    closure = geometry["profile"]["closure"]
-    side = geometry["profile"].get("material_side")
     reach = _best_closure(
         boundary, closure, geometry, origin, run, u_dir, low, high, ctx, side
     )

@@ -249,6 +249,96 @@ def _turned_stock(profile: dict, ctx: Context) -> tuple[str, list[str]] | None:
     return label, code
 
 
+def _revolution_axis(ctx: Context):
+    """The principal axis most of the part's round faces turn about, if there is one.
+
+    Quiddity publishes a turned profile only for parts it reads as shafts, and a part
+    made mostly of cones, tori and revolved faces can come through without one. The
+    faces themselves carry their axes, so they are grouped by axis line and weighted
+    by area. An axis counts only if it lies along x, y or z and carries at least
+    AXIS_SHARE of the part's surface: a single cross hole must not turn a block round.
+    """
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import (
+        GeomAbs_Cone,
+        GeomAbs_Cylinder,
+        GeomAbs_Sphere,
+        GeomAbs_SurfaceOfRevolution,
+        GeomAbs_Torus,
+    )
+
+    groups: dict = {}
+    total = 0.0
+    for face in ctx.part.faces():
+        area = float(face.area)
+        total += area
+        try:
+            surface = BRepAdaptor_Surface(face.wrapped)
+            kind = surface.GetType()
+            if kind == GeomAbs_Cylinder:
+                line = surface.Cylinder().Axis()
+            elif kind == GeomAbs_Cone:
+                line = surface.Cone().Axis()
+            elif kind == GeomAbs_Torus:
+                line = surface.Torus().Axis()
+            elif kind == GeomAbs_SurfaceOfRevolution:
+                line = surface.AxeOfRevolution()
+            elif kind == GeomAbs_Sphere:
+                continue  # a sphere turns about any axis through its centre
+            else:
+                continue
+        except Exception:  # noqa: BLE001 - a face without a readable axis is skipped
+            continue
+        direction = line.Direction()
+        vector = (direction.X(), direction.Y(), direction.Z())
+        index = max(range(3), key=lambda k: abs(vector[k]))
+        if abs(vector[index]) < 0.9999:
+            continue  # this tool turns bars about x, y or z only
+        location = line.Location()
+        point = (location.X(), location.Y(), location.Z())
+        across = tuple(round(point[k] / (ctx.diagonal * 1e-3)) for k in range(3) if k != index)
+        key = (index, across)
+        weight, _ = groups.get(key, (0.0, point))
+        groups[key] = (weight + area, point)
+    if not groups or total <= 0:
+        return None
+    (index, _across), (weight, point) = max(groups.items(), key=lambda item: item[1][0])
+    if weight < AXIS_SHARE * total:
+        return None
+    axis = tuple(1.0 if k == index else 0.0 for k in range(3))
+    anchor = tuple(0.0 if k == index else point[k] for k in range(3))
+    return axis, anchor
+
+
+#: Share of the surface a common axis must carry before the part is treated as turned.
+AXIS_SHARE = 0.4
+
+
+def _self_turned_stock(ctx: Context):
+    """A bar turned about the part's own axis of revolution, measured from the part."""
+    found = _revolution_axis(ctx)
+    if found is None:
+        return None
+    axis, anchor = found
+    along = dot(anchor, axis)
+    body_low, body_high = ctx.extent_along(axis)
+    widest = math.dist(ctx.bb_min, ctx.bb_max) / 2
+    bands = _measured_profile(ctx, axis, anchor, along, body_low, body_high, widest)
+    if not bands:
+        return None
+    code = _bands_to_code(bands, axis, anchor, along)
+    solid = run_source(code, "part")
+    if solid.volume <= 0 or ctx.held_by(solid) < HOLDS:
+        return None
+    name = "xyz"[max(range(3), key=lambda k: axis[k])]
+    biggest = max(2 * radius for _low, _high, radius in bands)
+    label = (
+        f"stock: bar turned to {len(bands)} diameters about {name}, measured from the "
+        f"part's own round faces, up to \u00d8{fmt(biggest, 3)}"
+    )
+    return (label, code), float(solid.volume)
+
+
 #: Stock must hold at least this share of the part, or it is not stock.
 HOLDS = 0.995
 
@@ -681,6 +771,13 @@ def stock_source(ctx: Context, document: dict) -> tuple[str, list[str]]:
         if turned is not None:
             candidates.append((run_source(turned[1], "part").volume, turned))
             break
+    if not candidates:
+        try:
+            own = _self_turned_stock(ctx)
+        except Exception:  # noqa: BLE001 - no turned bar is an answer too
+            own = None
+        if own is not None:
+            candidates.append((own[1], own[0]))
     outline = _isolated_silhouette_stock(ctx)
     if outline is not None:
         candidates.append((outline[2], (outline[0], outline[1])))
