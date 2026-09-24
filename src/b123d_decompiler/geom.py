@@ -353,13 +353,33 @@ def common_volume(a: Part, b: Part) -> float:
     return _volume(shape) if shape is not None else 0.0
 
 
+def as_shape(raw):
+    """Wrap a raw kernel shape as the build123d class it is; a bare Part measures nothing."""
+    from build123d import Compound, Solid
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopoDS import TopoDS
+
+    if raw.ShapeType() == TopAbs_SOLID:
+        return Solid(TopoDS.Solid_s(raw))
+    return Compound(TopoDS.Compound_s(raw))
+
+
 def shared_material(tool: Part, other: Part, reference: Part) -> tuple[float, float]:
-    """(volume shared by two tools, how much of it is material in the reference)."""
+    """(volume shared by two tools, how much of it is material in the reference).
+
+    The two tools are simple solids, so their intersection is a boolean; what part of
+    it the reference holds is counted, like every other question asked of the part.
+    """
     shared = _common(tool.wrapped, other.wrapped)
     if shared is None:
         return 0.0, 0.0
-    material = _common(shared, reference.wrapped)
-    return _volume(shared), (_volume(material) if material is not None else 0.0)
+    volume = _volume(shared)
+    if volume <= 0:
+        return 0.0, 0.0
+    try:
+        return volume, material_volume(as_shape(shared), reference)
+    except Exception:  # noqa: BLE001 - an unreadable overlap is treated as all material
+        return volume, volume
 
 
 _CLASSIFIERS: dict = {}
@@ -399,7 +419,7 @@ def _mesh_for(shape: Part):
     return entry[1]
 
 
-def sampled_overlap_volume(tool: Part, reference: Part, restorers, points: int = 900) -> float:
+def sampled_overlap_volume(tool: Part, reference: Part, restorers, points: int = 2000) -> float:
     """How much of `tool` covers reference material, counted rather than intersected.
 
     Throwing points at the problem is coarse next to a boolean, but it cannot come
@@ -452,40 +472,22 @@ def sampled_overlap_volume(tool: Part, reference: Part, restorers, points: int =
     return min(volume * shared / points, float(tool.volume))
 
 
-def overlap_after_restore(tool: Part, reference: Part, restorers) -> float:
-    """Volume of `tool` that eats reference material no restorer puts back.
+def material_volume(tool: Part, reference: Part, restorers=()) -> float:
+    """Volume of `tool` that covers reference material no restorer puts back.
+
+    This is the one measure of "how much of the part would this take", and it is
+    counted, not intersected. The intersection fails on exactly the tools this tool
+    proposes most, ones whose walls lie on a face of the part, and it fails in both
+    directions without a word: nothing where the tool plainly cuts material, the whole
+    tool where it is almost all clear. It can also take the process down outright.
+    A count against the part's mesh has none of those failure modes, and is fast.
 
     A cut through a pin standing in a bore overlaps material legitimately, because a
-    later fuse returns it. Measuring the cut alone would call that op wrong.
-
-    A boolean that fails here is not an answer of zero. Read that way it says the tool
-    is free to cut, which is the one conclusion a failed measurement must never be
-    allowed to reach, and it is exactly what a tool with a wall lying on a face of the
-    part provokes. So whenever the intersection comes back small enough for the tool
-    to pass as empty, the answer is checked by counting points instead, and the larger
-    of the two readings is the one returned.
+    later fuse returns it, so what a restorer puts back is not counted against it.
     """
-    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    return sampled_overlap_volume(tool, reference, list(restorers))
 
-    measured = 0.0
-    shape = _common(tool.wrapped, reference.wrapped)
-    if shape is not None:
-        for restorer in restorers:
-            cut = BRepAlgoAPI_Cut(shape, restorer.wrapped)
-            if not cut.IsDone():
-                break
-            shape = cut.Shape()
-        measured = _volume(shape)
-    if not _boxes_meet(tool.wrapped, reference.wrapped):
-        return measured
-    # The boolean fails in both directions on these tools: sometimes it finds nothing
-    # where the tool plainly cuts material, sometimes it hands back the whole tool
-    # where the tool is almost entirely clear. Only the count can tell which, so the
-    # count always runs. Where the two agree the larger is kept, since a cut that
-    # might eat material has to be treated as eating it; where they disagree the
-    # count wins, because it has no way to fail silently and the boolean does.
-    counted = sampled_overlap_volume(tool, reference, restorers)
-    size = float(tool.volume)
-    if abs(measured - counted) <= max(SUSPECT_SHARE * size, 0.5 * max(measured, counted)):
-        return max(measured, counted)
-    return counted
+
+def overlap_after_restore(tool: Part, reference: Part, restorers) -> float:
+    """Kept for callers of the old name; see material_volume."""
+    return material_volume(tool, reference, restorers)

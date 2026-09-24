@@ -12,7 +12,7 @@ import itertools
 import math
 
 from . import model
-from .geom import Context, common_volume, cross, dot, run_source, unit
+from .geom import Context, cross, dot, material_volume, run_source, unit
 from .model import Op, fmt, fmt_tuple
 
 AXES = {"x": (1.0, 0.0, 0.0), "y": (0.0, 1.0, 0.0), "z": (0.0, 0.0, 1.0)}
@@ -164,7 +164,7 @@ def _best_closure(boundary, closure, geometry, origin, run, u_dir, low, high, ct
             tool = run_source(
                 _recess_code(boundary, closure, reach, base, u_dir, run, high - low, side)
             )
-            taken = common_volume(tool, ctx.part)
+            taken = material_volume(tool, ctx.part)
         except Exception:  # noqa: BLE001 - an unbuildable closure is not chosen
             continue
         if best is None or taken < best:
@@ -179,15 +179,13 @@ def _empty_reach(piece_code, most: float, ctx: Context) -> float:
     The whole of it is tried first, since that is the common case, and failing that
     the farthest length that stays empty in the reference is found by halving.
     """
-    from .geom import overlap_after_restore
-
     def clean(length: float) -> bool:
         try:
             tool = run_source(piece_code(length))
             volume = float(tool.volume)
             if volume <= 0:
                 return False
-            return overlap_after_restore(tool, ctx.part, []) <= _OPEN_END_TOLERANCE * volume
+            return material_volume(tool, ctx.part) <= _OPEN_END_TOLERANCE * volume
         except Exception:  # noqa: BLE001 - an extension that will not build is not taken
             return False
 
@@ -930,7 +928,7 @@ def _turned_treatment(record: dict, ctx: Context, kind: str) -> Op | None:
                         ]
                     try:
                         tool = run_source(code)
-                        eaten = common_volume(tool, ctx.part)
+                        eaten = material_volume(tool, ctx.part)
                     except Exception:  # noqa: BLE001 - a reading that will not build
                         continue
                     if tool.volume <= 1e-9 or eaten > 0.05 * tool.volume:
@@ -1353,6 +1351,42 @@ def _edge_kind(edge) -> str:
     return str(edge.geom_type).rsplit(".", 1)[-1]
 
 
+def _walked_edges(face):
+    """The outer wire's edges in the order the kernel itself walks them.
+
+    The kernel knows each edge's place and direction around the wire, so asking it is
+    more reliable than chaining edges by matching their ends, which fails on outlines
+    that came out of a 2D union with slivers and near-coincident vertices. Each start
+    is snapped to the previous end, as the chaining does.
+    """
+    from build123d import Edge
+    from OCP.BRepTools import BRepTools_WireExplorer
+    from OCP.TopAbs import TopAbs_REVERSED
+
+    try:
+        explorer = BRepTools_WireExplorer(face.outer_wire().wrapped, face.wrapped)
+    except Exception:  # noqa: BLE001 - fall back to chaining by ends
+        return None
+    chain = []
+    while explorer.More():
+        edge = Edge(explorer.Current())
+        start, end = tuple(edge @ 0.0), tuple(edge @ 1.0)
+        if explorer.Orientation() == TopAbs_REVERSED:
+            start, end = end, start
+        if chain:
+            start = chain[-1][2]
+        if math.dist(start, end) > 1e-9 or edge.length > 1e-9:
+            chain.append((edge, start, end))
+        explorer.Next()
+    if len(chain) < 1:
+        return None
+    box = face.bounding_box()
+    span = math.dist(box.min.to_tuple(), box.max.to_tuple())
+    if math.dist(chain[-1][2], chain[0][1]) > max(1e-6, span * 1e-3):
+        return None  # the walk did not come back round, so it is not the outline
+    return chain
+
+
 def _ordered_edges(face):
     """The outer wire's edges, chained end to end, or None if they do not form a loop.
 
@@ -1363,6 +1397,9 @@ def _ordered_edges(face):
     start is snapped to the previous edge's end, which closes the gap in the profile
     rather than passing it on to a make_face that will refuse it.
     """
+    walked = _walked_edges(face)
+    if walked is not None:
+        return walked
     edges = list(face.outer_wire().edges())
     if not edges:
         return None
@@ -1500,7 +1537,7 @@ def _deepest_empty(build, reach: float, ctx: Context) -> float | None:
         except Exception:  # noqa: BLE001 - an unbuildable depth is simply not usable
             return False
         volume = float(tool.volume)
-        return volume > 0.0 and common_volume(tool, ctx.part) / volume <= _TRIM_TOLERANCE
+        return volume > 0.0 and material_volume(tool, ctx.part) / volume <= _TRIM_TOLERANCE
 
     if clear(reach):
         return reach

@@ -100,13 +100,53 @@ def plan_summary(plan: BuildPlan) -> dict:
     }
 
 
+def _code_lines(source: str) -> int:
+    """Lines of the script that do something: no docstring, comments or entry point."""
+    body = source.split('"""', 2)[-1].split("if __name__")[0]
+    return sum(
+        1
+        for line in body.splitlines()
+        if line.strip() and not line.strip().startswith(("#", "from ", "import "))
+    )
+
+
+def readability(plan: BuildPlan, source: str) -> dict:
+    """How the rebuild reads, next to how well it matches.
+
+    The aim is the designer's approach, not just the shape, and a score for the shape
+    alone rewards tracing: a billet drawn as dozens of extrusions can match a part
+    closely and read like nothing anyone would draw. So every result also says how long
+    its script is, what the billet is and how long that takes to say, and how many of
+    its cuts come from features the recogniser named against faces traced without one.
+    """
+    label = plan.stock_label
+    kind = (
+        "turned" if "turned" in label
+        else "outline" if "outline" in label
+        else "box" if "bounding box" in label
+        else "other"
+    )
+    stock_text = "\n".join(plan.stock_code)
+    emitted = [op for op in plan.ops if op.emitted]
+    features = sum(1 for op in emitted if not op.speculative)
+    trims = sum(1 for op in emitted if op.speculative)
+    return {
+        "script_lines": _code_lines(source),
+        "stock_kind": kind,
+        "stock_lines": sum(1 for line in stock_text.splitlines() if line.strip()),
+        "feature_ops": features,
+        "trim_ops": trims,
+        "feature_share": round(features / (features + trims), 3) if features + trims else None,
+    }
+
+
 def run_one(step_path: Path, out_dir: Path, *, samples: int = 1000, **kwargs) -> dict:
     """Decompile and score one file into its own result directory."""
     result_dir = out_dir / step_path.stem
     result_dir.mkdir(parents=True, exist_ok=True)
     record: dict = {"file": step_path.name}
     try:
-        plan, _ = decompile(step_path, result_dir / f"{step_path.stem}.py", **kwargs)
+        plan, source = decompile(step_path, result_dir / f"{step_path.stem}.py", **kwargs)
     except Exception as error:  # noqa: BLE001 - recognition failure is a result
         record["status"] = "recognition_failed"
         record["error"] = f"{type(error).__name__}: {error}"
@@ -115,6 +155,7 @@ def run_one(step_path: Path, out_dir: Path, *, samples: int = 1000, **kwargs) ->
 
     (result_dir / "plan.json").write_text(json.dumps(asdict(plan), indent=2))
     record["plan"] = plan_summary(plan)
+    record["readability"] = readability(plan, source)
     report = analyse(
         step_path,
         result_dir / f"{step_path.stem}.py",
@@ -130,6 +171,7 @@ SUMMARY_COLUMNS = [
     "file", "status", "iou", "missing_pct", "extra_pct", "volume_error_pct",
     "com_offset", "hausdorff_max", "ops", "emitted", "overlaps", "failed",
     "inert", "skipped_total", "association_area",
+    "stock_kind", "stock_lines", "script_lines", "feature_ops", "trim_ops", "feature_share",
 ]
 
 
@@ -154,6 +196,10 @@ def summary_row(record: dict) -> dict:
         "inert": plan.get("inert"),
         "skipped_total": plan.get("skipped_total"),
         "association_area": rounded(plan.get("association_area"), 3),
+        **{key: (record.get("readability") or {}).get(key) for key in (
+            "stock_kind", "stock_lines", "script_lines", "feature_ops", "trim_ops",
+            "feature_share",
+        )},
     }
 
 

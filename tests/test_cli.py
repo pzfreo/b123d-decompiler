@@ -70,3 +70,19 @@ def test_analyse_refuses_a_script_that_exports_nothing_solid(tmp_path):
 
     assert main(["analyse", str(step), str(empty), "--json", str(report)]) == 1
     assert json.loads(report.read_text())["status"] == "invalid_solid"
+
+
+def test_every_result_says_how_it_reads(tmp_path):
+    """The aim is the designer's approach, so a result carries more than its IoU."""
+    from pathlib import Path
+
+    from b123d_decompiler.pipeline import run_one
+
+    step = tmp_path / "pocket.step"
+    export_step(plate_with_pocket(), str(step))
+    record = run_one(Path(step), tmp_path / "out", samples=200)
+    reading = record["readability"]
+    assert reading["stock_kind"] in {"turned", "outline", "box", "other"}
+    assert reading["script_lines"] > 0 and reading["stock_lines"] > 0
+    assert reading["feature_ops"] >= 1
+    assert 0.0 <= reading["feature_share"] <= 1.0

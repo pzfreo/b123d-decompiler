@@ -16,7 +16,7 @@ from .geom import (
     Context,
     common_volume,
     is_sound,
-    overlap_after_restore,
+    material_volume,
     run_source,
     shared_material,
 )
@@ -201,7 +201,7 @@ def _verify(plan: BuildPlan, ctx: Context) -> None:
         tool = tools.get(position)
         if tool is None or op.kind != "cut" or op.status != model.PLANNED:
             continue
-        op.overlap = round(overlap_after_restore(tool, ctx.part, restorers), 6)
+        op.overlap = round(material_volume(tool, ctx.part, restorers), 6)
         if (
             op.overlap / op.volume > OVERLAP_LIMIT
             or op.overlap > PART_LIMIT * ctx.part.volume

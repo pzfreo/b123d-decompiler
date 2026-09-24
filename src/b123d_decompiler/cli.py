@@ -217,6 +217,19 @@ def cmd_batch(args) -> int:
         mean = sum(ious) / len(ious)
         print(f"IoU mean {mean:.4f}  median {ious[len(ious)//2]:.4f}"
               f"  worst {ious[0]:.4f}  best {ious[-1]:.4f}", file=sys.stderr)
+        lines = sorted(
+            (r.get("readability") or {}).get("script_lines") or 0 for r in scored
+        )
+        shares = [
+            (r.get("readability") or {}).get("feature_share") for r in scored
+        ]
+        shares = sorted(v for v in shares if v is not None)
+        print(
+            f"script lines median {lines[len(lines)//2]}"
+            + (f"  cuts from named features median {shares[len(shares)//2]:.0%}"
+               if shares else ""),
+            file=sys.stderr,
+        )
     print(f"summary: {out_dir / 'summary.csv'}", file=sys.stderr)
     return 0
 
