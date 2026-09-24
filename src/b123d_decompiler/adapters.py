@@ -1207,9 +1207,22 @@ def step_level(feature: dict, ctx: Context) -> Op | None:
     if above == below:
         return None  # not a face between material and space, so not a step to cut
 
-    spans[2] = (
-        (level, ctx.bb_max[2] + ctx.margin) if below else (ctx.bb_min[2] - ctx.margin, level)
-    )
+    # Clear only as far as the space stays empty. A face can open onto a window in a
+    # plate rather than onto the outside, and a box run on to the envelope then goes
+    # straight through the plate beyond the window: on one NIST part that cost the
+    # whole window, because the op was rightly refused and nothing else cleared it.
+    rise = 1.0 if below else -1.0
+    most = (ctx.bb_max[2] + ctx.margin - level) if below else (level - ctx.bb_min[2] + ctx.margin)
+
+    def piece(length: float) -> list[str]:
+        reach = dict(spans)
+        reach[2] = (level, level + length) if rise > 0 else (level - length, level)
+        return [_box_code(reach)]
+
+    reach = _empty_reach(piece, most, ctx)
+    if reach <= 1e-6:
+        return None  # nothing clear past the face, so nothing to cut
+    spans[2] = (level, level + reach) if below else (level - reach, level)
     side = "above" if below else "below"
     label = (
         f"clear {side} the face at z {fmt(level, 3)}, "
