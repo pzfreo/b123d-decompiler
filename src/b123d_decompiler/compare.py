@@ -16,7 +16,7 @@ from OCP.GProp import GProp_GProps
 
 from .fingerprint.analyze import decoded_mesh, mesh_shape
 from .fingerprint.hausdorff import hausdorff_distance
-from .geom import Context, _volume, robust_common
+from .geom import _volume, robust_common
 
 
 def _volume_properties(part: Part) -> GProp_GProps:
@@ -54,30 +54,28 @@ def _envelope_overlap(left: dict, right: dict) -> float:
     return shared / smaller if smaller > 0 else 0.0
 
 
-def sampled_overlap(reference: Part, rebuilt: Part, points: int = 20000) -> dict:
+def sampled_overlap(reference: Part, rebuilt: Part, points: int = 200000) -> dict:
     """Estimate how two solids overlap by classifying points, when booleans will not.
 
     A kernel that cannot intersect two shapes can still say whether a point is inside
-    one, so a failed boolean does not have to mean no answer at all. The estimate is
-    coarse and says so, which beats reporting a good rebuild as a total loss.
+    one, so a failed boolean does not have to mean no answer at all. The points are
+    asked of each shape's mesh rather than of the kernel's classifier: a rebuild read
+    back from STEP can come out flagged invalid, and the classifier then gives wrong
+    answers without saying so. On one NIST part that read as 5 % of the part missing
+    when 0.6 % was. Counting crossings of a mesh only needs the surface, and it is fast
+    enough to use ten times the points.
     """
-    import random
+    import numpy as np
 
-    left, right = Context(reference), Context(rebuilt)
-    low = [min(left.bb_min[k], right.bb_min[k]) for k in range(3)]
-    high = [max(left.bb_max[k], right.bb_max[k]) for k in range(3)]
-    volume = 1.0
-    for k in range(3):
-        volume *= max(high[k] - low[k], 0.0)
+    from .inside import MeshInside
 
-    generator = random.Random(20260921)  # a fixed stream keeps the number repeatable
-    in_reference = in_rebuilt = in_both = 0
-    for _ in range(points):
-        point = tuple(generator.uniform(low[k], high[k]) for k in range(3))
-        here, there = left.inside_solid(point), right.inside_solid(point)
-        in_reference += here
-        in_rebuilt += there
-        in_both += here and there
+    left, right = MeshInside(reference), MeshInside(rebuilt)
+    low, high = np.minimum(left.low, right.low), np.maximum(left.high, right.high)
+    volume = float(np.prod(high - low))
+    places = np.random.default_rng(20260921).uniform(low, high, size=(points, 3))
+    here, there = left.contains(places), right.contains(places)
+    in_reference, in_rebuilt = int(here.sum()), int(there.sum())
+    in_both = int((here & there).sum())
     either = in_reference + in_rebuilt - in_both
     scale = volume / points
     return {

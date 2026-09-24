@@ -234,3 +234,28 @@ def test_an_internal_blend_is_material_to_put_back(tmp_path):
     assert op is not None, "a concave blend on a plain corner should be modelled"
     assert op.kind == "fuse"
     assert run_source(op.code).volume > 0
+
+
+def test_a_rounded_slot_cut_along_y_is_not_mirrored():
+    """The section plane for a y-depth slot has its second axis pointing down z.
+
+    The slot adapter draws its own rounded profile, and for a while did so without the
+    correction the other section adapters apply, so every such slot came out mirrored
+    across the part. On NIST FTC 10 that took 18 % of the part away. This is that
+    record, and the tool has to sit where the record says.
+    """
+    from build123d import Box
+
+    from b123d_decompiler.adapters import slot
+    from b123d_decompiler.geom import Context, run_source
+
+    record = {
+        "width_axis": "x", "long_axis": "z", "width": 50.0, "length": 78.0,
+        "w_center": 0.01, "lo": -63.02, "hi": 14.98, "d_lo": -14.61, "d_hi": 0.39,
+        "end_radius": None, "corner_radius": 2.0,
+    }
+    op = slot({"record": record, "index": 0}, Context(Box(80, 40, 160)))
+    box = run_source(op.code).bounding_box()
+    assert abs(box.min.Z - -63.02) < 1e-3 and abs(box.max.Z - 14.98) < 1e-3
+    assert abs(box.min.X - -24.99) < 1e-3 and abs(box.max.X - 25.01) < 1e-3
+    assert abs(box.min.Y - -14.61) < 1e-3 and abs(box.max.Y - 0.39) < 1e-3

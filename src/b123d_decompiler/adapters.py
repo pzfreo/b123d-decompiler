@@ -1133,6 +1133,10 @@ def step_level(feature: dict, ctx: Context) -> Op | None:
     )
 
 
+#: Height of a quarter circle's arc above its chord, per unit radius: 1 - cos 45°.
+QUARTER_SAGITTA = 1 - math.sqrt(0.5)
+
+
 def slot(feature: dict, ctx: Context) -> Op | None:
     """A slot, with its rounded ends or rounded corners when it has them.
 
@@ -1180,28 +1184,34 @@ def slot(feature: dict, ctx: Context) -> Op | None:
         radius = min(radius, half, (high - low) / 2)
         outline = [
             ("line", (low + radius, lo_w), (high - radius, lo_w)),
-            ("arc", (high - radius, lo_w), (high, lo_w + radius), -radius * 0.4142),
+            ("arc", (high - radius, lo_w), (high, lo_w + radius), -radius * QUARTER_SAGITTA),
             ("line", (high, lo_w + radius), (high, hi_w - radius)),
-            ("arc", (high, hi_w - radius), (high - radius, hi_w), -radius * 0.4142),
+            ("arc", (high, hi_w - radius), (high - radius, hi_w), -radius * QUARTER_SAGITTA),
             ("line", (high - radius, hi_w), (low + radius, hi_w)),
-            ("arc", (low + radius, hi_w), (low, hi_w - radius), -radius * 0.4142),
+            ("arc", (low + radius, hi_w), (low, hi_w - radius), -radius * QUARTER_SAGITTA),
             ("line", (low, hi_w - radius), (low, lo_w + radius)),
-            ("arc", (low, lo_w + radius), (low + radius, lo_w), -radius * 0.4142),
+            ("arc", (low, lo_w + radius), (low + radius, lo_w), -radius * QUARTER_SAGITTA),
         ]
         label += f", {fmt(radius, 3)} radius corners"
 
     # The section lives in (long, width); place it on the plane the depth axis normals.
     order = ("xyz".index(long_axis), "xyz".index(width_axis))
     swap = order[0] > order[1]
+    # The section plane's own second axis can point against the world axis it stands
+    # for; the shared section helper corrects for that with this sign, and a profile
+    # drawn here has to as well or the slot comes out mirrored across the part.
+    _x_dir, _run, sign = _section_frame(depth_axis)
     drawn = []
     for piece in outline:
         start, finish = piece[1], piece[2]
         if swap:
             start, finish = (start[1], start[0]), (finish[1], finish[0])
+        start, finish = (start[0], sign * start[1]), (finish[0], sign * finish[1])
         if piece[0] == "line":
             drawn.append(f"Line({fmt_tuple(start)}, {fmt_tuple(finish)})")
         else:
-            sagitta = -piece[3] if swap else piece[3]
+            # Each reflection, the swap and the sign, turns an arc to the other side.
+            sagitta = (-piece[3] if swap else piece[3]) * sign
             drawn.append(f"SagittaArc({fmt_tuple(start)}, {fmt_tuple(finish)}, {fmt(sagitta)})")
     joined = "\n    + ".join(drawn)
     code = [f"_prof = (\n    {joined}\n)"] + _section_extrusion(

@@ -382,6 +382,23 @@ def _context_for(shape: Part) -> Context:
     return entry[1]
 
 
+_MESHES: dict = {}
+
+
+def _mesh_for(shape: Part):
+    """One mesh per shape, reused across calls, kept alive alongside its id."""
+    from .inside import MeshInside
+
+    key = id(shape)
+    entry = _MESHES.get(key)
+    if entry is None or entry[0] is not shape:
+        if len(_MESHES) > 8:
+            _MESHES.clear()
+        entry = (shape, MeshInside(shape))
+        _MESHES[key] = entry
+    return entry[1]
+
+
 def sampled_overlap_volume(tool: Part, reference: Part, restorers, points: int = 900) -> float:
     """How much of `tool` covers reference material, counted rather than intersected.
 
@@ -414,17 +431,24 @@ def sampled_overlap_volume(tool: Part, reference: Part, restorers, points: int =
     volume = span[0] * span[1] * span[2]
 
     in_tool = Context(tool).inside_solid
-    in_reference = _context_for(reference).inside_solid
     in_restorer = [Context(restorer).inside_solid for restorer in restorers]
 
     generator = random.Random(20260922)  # a fixed stream keeps the number repeatable
-    shared = 0
-    for _ in range(points):
-        place = tuple(generator.uniform(low[k], high[k]) for k in range(3))
-        if not in_tool(place) or not in_reference(place):
-            continue
-        if not any(back(place) for back in in_restorer):
-            shared += 1
+    places = [
+        tuple(generator.uniform(low[k], high[k]) for k in range(3)) for _ in range(points)
+    ]
+    # The tools are simple solids and the exact classifier is quick on them. The part
+    # can have hundreds of free-form faces, where it is not, so the part is asked of
+    # its mesh, for every point that falls in the tool at once.
+    candidates = [place for place in places if in_tool(place)]
+    if not candidates:
+        return 0.0
+    material = _mesh_for(reference).contains(candidates)
+    shared = sum(
+        1
+        for place, solid in zip(candidates, material, strict=True)
+        if solid and not any(back(place) for back in in_restorer)
+    )
     return min(volume * shared / points, float(tool.volume))
 
 
