@@ -399,7 +399,7 @@ def _outline_source(outline, ctx: Context):
     # Coarser than the mesh by a margin. A billet drawn to the mesh's own tolerance has
     # hundreds of flat sides on every curve, and every boolean against the part it
     # becomes then crawls: one cut in the sequence check ran for six minutes.
-    tolerance = max(ctx.diagonal * OUTLINE_TOLERANCE_SHARE, 5 * ctx.diagonal * DEFLECTION_SHARE)
+    tolerance = max(ctx.diagonal * OUTLINE_TOLERANCE_SHARE, ctx.diagonal * DEFLECTION_SHARE)
     index = outline.index
     envelope = (ctx.bb_min, ctx.bb_max)
     if outline.kind == "shadow":
@@ -444,7 +444,7 @@ def _complexity(code: list[str]) -> float:
 
 
 #: How closely an outline billet follows the part, as a share of its diagonal.
-OUTLINE_TOLERANCE_SHARE = 1e-3
+OUTLINE_TOLERANCE_SHARE = 2e-4
 
 #: Most extrusions an outline billet may take before it stops being the billet a
 #: designer would draw and becomes a tracing of the part.
