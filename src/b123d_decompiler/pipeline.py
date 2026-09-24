@@ -156,6 +156,8 @@ def run_one(step_path: Path, out_dir: Path, *, samples: int = 1000, **kwargs) ->
     (result_dir / "plan.json").write_text(json.dumps(asdict(plan), indent=2))
     record["plan"] = plan_summary(plan)
     record["readability"] = readability(plan, source)
+    record["timings"] = plan.timings
+    record["stock_trials"] = plan.stock_trials
     report = analyse(
         step_path,
         result_dir / f"{step_path.stem}.py",
@@ -172,6 +174,7 @@ SUMMARY_COLUMNS = [
     "com_offset", "hausdorff_max", "ops", "emitted", "overlaps", "failed",
     "inert", "skipped_total", "association_area",
     "stock_kind", "stock_lines", "script_lines", "feature_ops", "trim_ops", "feature_share",
+    "trials", "stock_search_s", "first_trial_s", "extra_trials_s", "plan_s",
 ]
 
 
@@ -200,6 +203,11 @@ def summary_row(record: dict) -> dict:
             "stock_kind", "stock_lines", "script_lines", "feature_ops", "trim_ops",
             "feature_share",
         )},
+        "trials": (record.get("timings") or {}).get("trials"),
+        "stock_search_s": (record.get("timings") or {}).get("stock_search"),
+        "first_trial_s": (record.get("timings") or {}).get("first_trial"),
+        "extra_trials_s": (record.get("timings") or {}).get("extra_trials"),
+        "plan_s": (record.get("timings") or {}).get("total"),
     }
 
 

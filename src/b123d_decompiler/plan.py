@@ -299,23 +299,29 @@ def _best_stock(plan: BuildPlan, stocks, ctx: Context) -> BuildPlan:
         # The first billet is always carried through; the rest only while there is time.
         if trials and time.monotonic() - started > TRIAL_BUDGET:
             break
+        began = time.monotonic()
         trial = copy.deepcopy(plan)
         trial.stock_label, trial.stock_code = label, list(code)
         finished = _verify(trial, ctx)
         if len(stocks) == 1:
+            trial.stock_trials = [
+                {"stock": label, "iou": None, "chosen": True,
+                 "seconds": round(time.monotonic() - began, 1)}
+            ]
             return trial
         try:
             score = mesh_iou(ctx.part, finished) if finished is not None else 0.0
         except Exception:  # noqa: BLE001 - a rebuild that will not measure scores nothing
             score = 0.0
         simplicity = 1 if "turned" in label else _complexity(code)
-        trials.append((score, simplicity, trial))
-    best = max(score for score, _simplicity, _trial in trials)
+        trials.append((score, simplicity, trial, round(time.monotonic() - began, 1)))
+    best = max(entry[0] for entry in trials)
     tied = [entry for entry in trials if entry[0] >= best - STOCK_TIE]
-    _score, _simplicity, chosen = min(tied, key=lambda entry: entry[1])
+    chosen = min(tied, key=lambda entry: entry[1])[2]
     chosen.stock_trials = [
-        {"stock": trial.stock_label, "iou": round(score, 4), "chosen": trial is chosen}
-        for score, _simplicity, trial in trials
+        {"stock": trial.stock_label, "iou": round(score, 4), "chosen": trial is chosen,
+         "seconds": seconds}
+        for score, _simplicity, trial, seconds in trials
     ]
     return chosen
 
@@ -328,9 +334,11 @@ def build_plan(
     verify: bool = True,
     trim_faces: bool = True,
 ) -> BuildPlan:
+    began = time.monotonic()
     ctx = Context(local_part)
     ctx.note_cylinders(_cylinder_catalogue(document))
     stocks = stock_candidates(ctx, document)
+    stock_seconds = time.monotonic() - began
     stock_label, stock_code = stocks[0]
     plan = BuildPlan(
         source=source,
@@ -373,10 +381,20 @@ def build_plan(
         if passed_over:
             plan.skipped["unclaimed_faces"] = passed_over
 
+    proposed = time.monotonic()
     if verify:
         plan = _best_stock(plan, stocks, ctx)
     else:
         _accept_unverified(plan)
+    trial_seconds = [trial.get("seconds") or 0.0 for trial in plan.stock_trials]
+    plan.timings = {
+        "stock_search": round(stock_seconds, 1),
+        "features_and_trims": round(proposed - began - stock_seconds, 1),
+        "first_trial": round(trial_seconds[0], 1) if trial_seconds else None,
+        "extra_trials": round(sum(trial_seconds[1:]), 1),
+        "trials": len(trial_seconds),
+        "total": round(time.monotonic() - began, 1),
+    }
 
     # Cuts first, coarse to fine, then the additive ops that put material back.
     # Quiddity reports evidence, not history, so there is no recorded order to

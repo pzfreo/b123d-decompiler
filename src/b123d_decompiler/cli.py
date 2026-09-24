@@ -230,6 +230,16 @@ def cmd_batch(args) -> int:
                if shares else ""),
             file=sys.stderr,
         )
+        timings = [r.get("timings") or {} for r in scored]
+        extra = sorted(t.get("extra_trials") or 0.0 for t in timings)
+        total = sum(t.get("total") or 0.0 for t in timings)
+        if total:
+            print(
+                f"extra billets: median {extra[len(extra)//2]:.0f}s a part, "
+                f"{sum(extra):.0f}s of {total:.0f}s planning in all "
+                f"({sum(extra) / total:.0%})",
+                file=sys.stderr,
+            )
     print(f"summary: {out_dir / 'summary.csv'}", file=sys.stderr)
     return 0
 

@@ -64,6 +64,7 @@ class BuildPlan:
     refusals: list[str] = field(default_factory=list)
     association: dict = field(default_factory=dict)
     stock_trials: list = field(default_factory=list)  # billets tried and how each ended
+    timings: dict = field(default_factory=dict)  # seconds spent in each stage
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2)
