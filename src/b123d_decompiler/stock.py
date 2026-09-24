@@ -288,6 +288,50 @@ def _revolution_axis(ctx: Context):
 AXIS_SHARE = 0.4
 
 
+#: How far along the axis a step's larger diameter is carried either side of it.
+STEP_OVERLAP = 0.005
+
+
+def _covering_steps(bands, reach: float):
+    """Each band as wide as any band within `reach` of it along the axis.
+
+    A measured band's edges fall between samples, not on the step faces, so the larger
+    diameter at a step can start a fraction before the band that measured it. On one
+    part that left a flange's leading edge outside the bar and the bar was refused for
+    holding 98 % of the part. Carrying each step's diameter a short way either side
+    costs a sliver of volume and covers it.
+    """
+    widened = []
+    for low, high, _radius in bands:
+        widest = max(
+            radius for start, finish, radius in bands
+            if finish >= low - reach and start <= high + reach
+        )
+        widened.append((low, high, widest))
+    return widened
+
+
+#: Neighbouring diameters closer than this share of the largest are one step.
+STEP_MERGE = 0.01
+
+
+def _merged_steps(bands, tolerance: float):
+    """Neighbouring bands of nearly the same diameter joined into one, at the larger.
+
+    A profile measured slice by slice steps at every slice; a designer turns a bar to a
+    handful of diameters. Joining bands that differ by less than the tolerance keeps
+    the steps that are really there and drops the ones that are only sampling.
+    """
+    merged = []
+    for low, high, radius in bands:
+        if merged and abs(merged[-1][2] - radius) <= tolerance and abs(merged[-1][1] - low) < 1e-9:
+            start, _end, previous = merged[-1]
+            merged[-1] = (start, high, max(previous, radius))
+        else:
+            merged.append((low, high, radius))
+    return merged
+
+
 def _self_turned_stock(ctx: Context):
     """A bar turned about the part's own axis of revolution, measured from the part."""
     found = _revolution_axis(ctx)
@@ -300,6 +344,8 @@ def _self_turned_stock(ctx: Context):
     bands = _measured_profile(ctx, axis, anchor, along, body_low, body_high, widest)
     if not bands:
         return None
+    bands = _covering_steps(bands, (body_high - body_low) * STEP_OVERLAP)
+    bands = _merged_steps(bands, max(radius for _low, _high, radius in bands) * STEP_MERGE)
     code = _bands_to_code(bands, axis, anchor, along)
     solid = run_source(code, "part")
     if solid.volume <= 0 or ctx.held_by(solid) < HOLDS:
@@ -587,6 +633,9 @@ def stock_candidates(ctx: Context, document: dict) -> list[tuple[str, list[str]]
         if turned is not None:
             candidates.append((run_source(turned[1], "part").volume, turned))
             break
+    # The part's own axis only when quiddity has no turned profile. Tried alongside
+    # quiddity's bar on partly turned parts, it ended far behind every outline and took
+    # a trial from one that would have ended better.
     if not candidates:
         try:
             own = _self_turned_stock(ctx)
@@ -598,7 +647,7 @@ def stock_candidates(ctx: Context, document: dict) -> list[tuple[str, list[str]]
         candidates.append((volume, (label, code)))
     candidates.sort(key=lambda entry: _drawing_cost(*entry))
     chosen = [stock for _volume, stock in candidates]
-    # Quiddity's turned bar is always tried, whatever its place in the order.
+    # A turned bar is always tried, whatever its place in the order.
     turned_first = [stock for stock in chosen if "turned" in stock[0]][:1]
     rest = [stock for stock in chosen if stock not in turned_first]
     ordered = (turned_first + rest)[:STOCK_TRIALS]
