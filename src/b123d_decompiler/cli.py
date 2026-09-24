@@ -105,7 +105,7 @@ def cmd_part(args) -> int:
 
 def cmd_stock(args) -> int:
     """The silhouette stock search, run apart so the parent can put a clock on it."""
-    from .plan import silhouette_stock_from_file
+    from .stock import silhouette_stock_from_file
 
     silhouette_stock_from_file(args.shape, args.answer)
     return 0
