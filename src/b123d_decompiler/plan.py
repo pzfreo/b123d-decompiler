@@ -8,6 +8,8 @@ one adapter rather than to "the pipeline".
 
 from __future__ import annotations
 
+import time
+
 from build123d import Part
 
 from . import model
@@ -21,7 +23,7 @@ from .geom import (
     shared_material,
 )
 from .model import BuildPlan, Op
-from .stock import stock_source
+from .stock import stock_candidates
 
 #: A cut tool may clip this fraction of its own volume out of material the part
 #: keeps before we call it wrong rather than tolerance noise.
@@ -127,7 +129,7 @@ def _spend_trim_budget(plan: BuildPlan, ctx: Context) -> None:
         spent += cost
 
 
-def _reject_destructive(plan: BuildPlan, tools: dict[int, Part], stock: Part) -> None:
+def _reject_destructive(plan: BuildPlan, tools: dict[int, Part], stock: Part):
     """Apply the ops in order and drop any that leave nothing behind.
 
     Building a tool and measuring it is not the same as using it. A malformed tool can
@@ -174,6 +176,7 @@ def _reject_destructive(plan: BuildPlan, tools: dict[int, Part], stock: Part) ->
             )
             continue
         part = candidate
+    return part
 
 
 def _accept_unverified(plan: BuildPlan) -> None:
@@ -197,7 +200,7 @@ def _accept_unverified(plan: BuildPlan) -> None:
             op.note = "; ".join(filter(None, [op.note, "not checked against the part"]))
 
 
-def _verify(plan: BuildPlan, ctx: Context) -> None:
+def _verify(plan: BuildPlan, ctx: Context):
     """Judge every op against the reference, then against the sequence it belongs to.
 
     Fuses are settled first because a cut is only wrong where no fuse puts the material
@@ -240,7 +243,7 @@ def _verify(plan: BuildPlan, ctx: Context) -> None:
             op.status = model.OK
 
     _spend_trim_budget(plan, ctx)
-    _reject_destructive(plan, tools, stock)
+    return _reject_destructive(plan, tools, stock)
 
 
 def _cylinder_catalogue(document: dict):
@@ -267,6 +270,56 @@ def _cylinder_catalogue(document: dict):
     return found
 
 
+#: Finished rebuilds this close in IoU are a tie, and the simpler billet takes it.
+STOCK_TIE = 0.005
+
+#: Seconds to spend carrying further billets through once the first has finished.
+TRIAL_BUDGET = 600.0
+
+
+def _best_stock(plan: BuildPlan, stocks, ctx: Context) -> BuildPlan:
+    """Carry each candidate billet through to a finished rebuild and keep the best.
+
+    The features and trims do not depend on the billet, so they are proposed once;
+    checking them does, so each billet gets its own copy of the plan to check. The
+    sequence check already applies every op in turn, so what it ends holding is the
+    rebuild, and that is measured against the part. Rebuilds within STOCK_TIE of the
+    best are a tie, and the billet that is simpler to draw takes it, since that is the
+    reading closer to how the part was designed. Every billet tried, and how it ended,
+    is kept in the plan.
+    """
+    import copy
+
+    from .geom import mesh_iou
+    from .stock import _complexity
+
+    trials = []
+    started = time.monotonic()
+    for label, code in stocks:
+        # The first billet is always carried through; the rest only while there is time.
+        if trials and time.monotonic() - started > TRIAL_BUDGET:
+            break
+        trial = copy.deepcopy(plan)
+        trial.stock_label, trial.stock_code = label, list(code)
+        finished = _verify(trial, ctx)
+        if len(stocks) == 1:
+            return trial
+        try:
+            score = mesh_iou(ctx.part, finished) if finished is not None else 0.0
+        except Exception:  # noqa: BLE001 - a rebuild that will not measure scores nothing
+            score = 0.0
+        simplicity = 1 if "turned" in label else _complexity(code)
+        trials.append((score, simplicity, trial))
+    best = max(score for score, _simplicity, _trial in trials)
+    tied = [entry for entry in trials if entry[0] >= best - STOCK_TIE]
+    _score, _simplicity, chosen = min(tied, key=lambda entry: entry[1])
+    chosen.stock_trials = [
+        {"stock": trial.stock_label, "iou": round(score, 4), "chosen": trial is chosen}
+        for score, _simplicity, trial in trials
+    ]
+    return chosen
+
+
 def build_plan(
     document: dict,
     local_part: Part,
@@ -277,7 +330,8 @@ def build_plan(
 ) -> BuildPlan:
     ctx = Context(local_part)
     ctx.note_cylinders(_cylinder_catalogue(document))
-    stock_label, stock_code = stock_source(ctx, document)
+    stocks = stock_candidates(ctx, document)
+    stock_label, stock_code = stocks[0]
     plan = BuildPlan(
         source=source,
         frame=document["frame"],
@@ -320,7 +374,7 @@ def build_plan(
             plan.skipped["unclaimed_faces"] = passed_over
 
     if verify:
-        _verify(plan, ctx)
+        plan = _best_stock(plan, stocks, ctx)
     else:
         _accept_unverified(plan)
 

@@ -276,3 +276,24 @@ def test_an_unverified_plan_still_builds_its_features(tmp_path):
     features = [op for op in plan.ops if not op.speculative]
     assert features and all(op.emitted for op in features)
     assert not any(op.emitted for op in plan.ops if op.speculative)
+
+
+def test_the_billet_kept_is_the_one_that_ended_best(tmp_path):
+    """Several billets are carried through to a finished rebuild and the best is kept.
+
+    Which billet ends best cannot be read off the billet, so the choice is made on
+    the finished rebuilds. Within a small tie margin the simpler billet wins.
+    """
+    from b123d_decompiler.plan import STOCK_TIE
+    from b123d_decompiler.pipeline import decompile
+
+    step = tmp_path / "boss.step"
+    export_step(boss(), str(step))
+    plan, _source = decompile(step, tmp_path / "boss.py")
+    trials = plan.stock_trials
+    if len(trials) < 2:
+        return  # only one billet was worth trying on this part
+    chosen = [trial for trial in trials if trial["chosen"]]
+    assert len(chosen) == 1
+    assert chosen[0]["stock"] == plan.stock_label
+    assert max(trial["iou"] for trial in trials) - chosen[0]["iou"] <= STOCK_TIE

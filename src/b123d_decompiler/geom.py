@@ -455,3 +455,22 @@ def material_volume(tool: Part, reference: Part, restorers=()) -> float:
     return sampled_overlap_volume(tool, reference, list(restorers))
 
 
+
+
+def mesh_iou(first: Part, second: Part, points: int = 100000) -> float:
+    """How closely two solids coincide, intersection over union, by counting points.
+
+    Used to tell which of several finished rebuilds matches the part best, many times
+    per part, so it asks each solid's mesh rather than intersecting them.
+    """
+    import numpy as np
+
+    from .inside import MeshInside
+
+    left = _mesh_for(first)
+    right = MeshInside(second)
+    low, high = np.minimum(left.low, right.low), np.maximum(left.high, right.high)
+    places = np.random.default_rng(20260925).uniform(low, high, size=(points, 3))
+    here, there = left.contains(places), right.contains(places)
+    either = int((here | there).sum())
+    return float((here & there).sum()) / either if either else 0.0

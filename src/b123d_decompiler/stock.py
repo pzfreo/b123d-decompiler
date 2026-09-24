@@ -376,9 +376,6 @@ def _outline_source(outline, ctx: Context):
     return lambda target: polygon_source(pieces, index, target, tolerance)
 
 
-#: An outline must be under this share of a turned bar's volume to be taken instead.
-TURNED_MARGIN = 0.8
-
 #: What each line or arc in a billet's outlines adds to its cost, as a share of it.
 SEGMENT_COST = 0.002
 
@@ -409,10 +406,10 @@ MOST_EXTRUSIONS = 8
 
 
 #: How many of the most plausible combinations are built and measured.
-BUILT_COMBINATIONS = 6
+BUILT_COMBINATIONS = 10
 
 
-def _silhouette_stock(ctx: Context) -> tuple[str, list[str], float] | None:
+def _silhouette_stock(ctx: Context) -> list[tuple[str, list[str], float]]:
     """The billet the part's own outlines cut out: ranked by counting, chosen by measuring.
 
     Every outline, a shadow and a stepped billet along each axis, is scored against
@@ -475,7 +472,7 @@ def _silhouette_stock(ctx: Context) -> tuple[str, list[str], float] | None:
     drawable = [chosen for _cost, chosen in scored]
 
     stop_at = time.monotonic() + STOCK_BUDGET
-    best, tried = None, 0
+    built, tried = [], 0
     for chosen in drawable:
         if tried >= BUILT_COMBINATIONS or time.monotonic() > stop_at:
             break
@@ -495,11 +492,10 @@ def _silhouette_stock(ctx: Context) -> tuple[str, list[str], float] | None:
             continue
         if ctx.held_by(drawn) < HOLDS:
             continue
-        cost = float(drawn.volume) * _complexity(code)
-        if best is None or cost < best[0]:
-            names = ", ".join(outline.name for outline in chosen)
-            best = (cost, f"stock: the part's own outline, {names}", code, float(drawn.volume))
-    return None if best is None else best[1:]
+        names = ", ".join(outline.name for outline in chosen)
+        built.append((f"stock: the part's own outline, {names}", code, float(drawn.volume)))
+    built.sort(key=lambda entry: entry[2] * _complexity(entry[1]))
+    return built
 
 
 def _isolated_silhouette_stock(ctx: Context):
@@ -532,13 +528,11 @@ def _isolated_silhouette_stock(ctx: Context):
                 command, capture_output=True, check=False, timeout=STOCK_BUDGET + 60.0
             )
         except subprocess.TimeoutExpired:
-            return None
+            return []
         if not answer_path.exists():
-            return None
+            return []
         answer = json.loads(answer_path.read_text())
-    if answer is None:
-        return None
-    return answer["label"], answer["code"], answer["volume"]
+    return [(entry["label"], entry["code"], entry["volume"]) for entry in answer or []]
 
 
 def silhouette_stock_from_file(shape_path: str, answer_path: str) -> None:
@@ -562,39 +556,37 @@ def silhouette_stock_from_file(shape_path: str, answer_path: str) -> None:
     try:
         found = _silhouette_stock(Context(part))
     except Exception:  # noqa: BLE001 - no billet is an answer, the parent falls back
-        found = None
-    answer = None if found is None else {
-        "label": found[0], "code": list(found[1]), "volume": float(found[2]),
-    }
+        found = []
+    answer = [
+        {"label": label, "code": list(code), "volume": float(volume)}
+        for label, code, volume in found
+    ]
     Path(answer_path).write_text(json.dumps(answer))
 
 
-def stock_source(ctx: Context, document: dict) -> tuple[str, list[str]]:
-    """The solid the part is cut from.
+#: How many billets are carried through the whole pipeline to see which ends best.
+STOCK_TRIALS = 6
 
-    Quiddity publishes no base-body record. A turned profile is the one family that
-    describes a whole billet rather than a region of the body, so it is tried first and
-    kept only if it contains the part. Otherwise the envelope, which is never too small,
-    so everything the rebuild misses shows up as material left behind rather than as a
-    hole in the part.
+
+def stock_candidates(ctx: Context, document: dict) -> list[tuple[str, list[str]]]:
+    """The billets worth trying, most plausible first, as (label, code).
+
+    Which billet ends best cannot be read off the billet: it depends on how much of
+    what is left over the features and trims can then remove, and a tighter but busier
+    billet wins on one part and loses on the next. So the planner carries the first few
+    of these through to a finished rebuild and keeps the one that matches the part
+    best. A bar turned from quiddity's own profile is always among them when it holds
+    the part, since quiddity reads the part as turned.
     """
     candidates = []
     for profile in (document.get("derived") or {}).get("turned_profiles") or []:
         try:
             turned = _turned_stock(profile, ctx)
-        except Exception:  # noqa: BLE001 - an unusable profile just means the envelope
+        except Exception:  # noqa: BLE001 - an unusable profile just means other billets
             continue
         if turned is not None:
-            # Quiddity reads this part as turned, and a bar turned from its profile holds
-            # the whole part. An outline has to be clearly smaller to be preferred: its few
-            # steps cannot follow a turned profile, and on a flanged spool an outline 1 %
-            # smaller left a ring round the body that nothing after it removed. But a
-            # profile can describe only part of the body, and then the bar is far too big.
-            turned_volume = run_source(turned[1], "part").volume
-            outline = _isolated_silhouette_stock(ctx)
-            if outline is not None and outline[2] < TURNED_MARGIN * turned_volume:
-                return outline[0], outline[1]
-            return turned
+            candidates.append((run_source(turned[1], "part").volume, turned))
+            break
     if not candidates:
         try:
             own = _self_turned_stock(ctx)
@@ -602,12 +594,20 @@ def stock_source(ctx: Context, document: dict) -> tuple[str, list[str]]:
             own = None
         if own is not None:
             candidates.append((own[1], own[0]))
-    outline = _isolated_silhouette_stock(ctx)
-    if outline is not None:
-        candidates.append((outline[2], (outline[0], outline[1])))
-    if candidates:
-        return min(candidates, key=lambda entry: _drawing_cost(*entry))[1]
-    return _envelope_stock(ctx)
+    for label, code, volume in _isolated_silhouette_stock(ctx):
+        candidates.append((volume, (label, code)))
+    candidates.sort(key=lambda entry: _drawing_cost(*entry))
+    chosen = [stock for _volume, stock in candidates]
+    # Quiddity's turned bar is always tried, whatever its place in the order.
+    turned_first = [stock for stock in chosen if "turned" in stock[0]][:1]
+    rest = [stock for stock in chosen if stock not in turned_first]
+    ordered = (turned_first + rest)[:STOCK_TRIALS]
+    return ordered or [_envelope_stock(ctx)]
+
+
+def stock_source(ctx: Context, document: dict) -> tuple[str, list[str]]:
+    """The single most plausible billet, for callers that do not try several."""
+    return stock_candidates(ctx, document)[0]
 
 
 def _drawing_cost(volume: float, stock) -> float:

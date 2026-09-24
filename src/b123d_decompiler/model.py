@@ -63,6 +63,7 @@ class BuildPlan:
     skipped: dict[str, int] = field(default_factory=dict)  # family -> count, no adapter
     refusals: list[str] = field(default_factory=list)
     association: dict = field(default_factory=dict)
+    stock_trials: list = field(default_factory=list)  # billets tried and how each ended
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2)
