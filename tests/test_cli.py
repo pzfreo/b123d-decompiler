@@ -86,3 +86,12 @@ def test_every_result_says_how_it_reads(tmp_path):
     assert reading["script_lines"] > 0 and reading["stock_lines"] > 0
     assert reading["feature_ops"] >= 1
     assert 0.0 <= reading["feature_share"] <= 1.0
+
+
+def test_good_enough_of_zero_tries_one_billet_only(tmp_path):
+    """Any rebuild is good enough at zero, so no second billet is tried."""
+    step = tmp_path / "part.step"
+    export_step(plate_with_pocket(), str(step))
+    script, plan = tmp_path / "part.py", tmp_path / "plan.json"
+    assert main([str(step), "-o", str(script), "--plan", str(plan), "--good-enough", "0"]) == 0
+    assert len(json.loads(plan.read_text())["stock_trials"]) == 1

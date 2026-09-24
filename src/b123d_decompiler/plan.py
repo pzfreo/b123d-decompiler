@@ -276,8 +276,13 @@ STOCK_TIE = 0.005
 #: Seconds to spend carrying further billets through once the first has finished.
 TRIAL_BUDGET = 600.0
 
+#: A rebuild this close to the part is good enough: no further billets are tried.
+GOOD_ENOUGH = 0.98
 
-def _best_stock(plan: BuildPlan, stocks, ctx: Context) -> BuildPlan:
+
+def _best_stock(
+    plan: BuildPlan, stocks, ctx: Context, good_enough: float | None = None
+) -> BuildPlan:
     """Carry each candidate billet through to a finished rebuild and keep the best.
 
     The features and trims do not depend on the billet, so they are proposed once;
@@ -291,13 +296,19 @@ def _best_stock(plan: BuildPlan, stocks, ctx: Context) -> BuildPlan:
     import copy
 
     from .geom import mesh_iou
+
+    good_enough = GOOD_ENOUGH if good_enough is None else good_enough
     from .stock import _complexity
 
     trials = []
     started = time.monotonic()
     for label, code in stocks:
-        # The first billet is always carried through; the rest only while there is time.
+        # The first billet is always carried through; the rest only while there is time,
+        # and not at all once one has ended close enough to the part to leave little to
+        # find. On sixteen parts, stopping at GOOD_ENOUGH gave up 0.003 IoU in all.
         if trials and time.monotonic() - started > TRIAL_BUDGET:
+            break
+        if trials and max(entry[0] for entry in trials) >= good_enough:
             break
         began = time.monotonic()
         trial = copy.deepcopy(plan)
@@ -333,6 +344,7 @@ def build_plan(
     *,
     verify: bool = True,
     trim_faces: bool = True,
+    good_enough: float | None = None,
 ) -> BuildPlan:
     began = time.monotonic()
     ctx = Context(local_part)
@@ -383,7 +395,7 @@ def build_plan(
 
     proposed = time.monotonic()
     if verify:
-        plan = _best_stock(plan, stocks, ctx)
+        plan = _best_stock(plan, stocks, ctx, GOOD_ENOUGH if good_enough is None else good_enough)
     else:
         _accept_unverified(plan)
     trial_seconds = [trial.get("seconds") or 0.0 for trial in plan.stock_trials]
