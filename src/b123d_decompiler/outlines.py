@@ -268,8 +268,13 @@ def _projected(triangles: np.ndarray, index: int):
     return shapely.union_all(shapely.polygons(rings))
 
 
-def _section(triangles: np.ndarray, index: int, at: float):
-    """The part's cross section at one position along an axis, as a shapely geometry."""
+def _section(triangles: np.ndarray, index: int, at: float, grid: float = 1e-6):
+    """The part's cross section at one position along an axis, as a shapely geometry.
+
+    Each triangle the plane crosses gives a segment. Neighbouring segments meet only
+    to within rounding, and a loop that does not quite close is no loop at all to
+    polygonize, so the ends are snapped to a fine grid first.
+    """
     import shapely
 
     height = triangles[:, :, index] - at
@@ -286,7 +291,11 @@ def _section(triangles: np.ndarray, index: int, at: float):
             segments.append(_plane_uv(np.asarray(ends), index))
     if not segments:
         return None
-    lines = shapely.multilinestrings(np.asarray(segments))
+    snapped = np.round(np.asarray(segments) / grid) * grid
+    snapped = snapped[np.linalg.norm(snapped[:, 0] - snapped[:, 1], axis=1) > 0]
+    if not len(snapped):
+        return None
+    lines = shapely.multilinestrings(snapped)
     faces = shapely.polygonize(shapely.get_parts(shapely.node(lines)))
     return shapely.union_all(shapely.get_parts(faces)) if not faces.is_empty else None
 
@@ -315,8 +324,8 @@ def outline_polygons(triangles: np.ndarray, index: int, tolerance: float,
         inset = (high - low) * 1e-3
         pieces = [
             _projected(chosen, index) if len(chosen) else None,
-            _section(triangles, index, low + inset),
-            _section(triangles, index, high - inset),
+            _section(triangles, index, low + inset, tolerance * 0.1),
+            _section(triangles, index, high - inset, tolerance * 0.1),
         ]
     pieces = [p for p in pieces if p is not None and not p.is_empty]
     if not pieces:
