@@ -8,8 +8,6 @@ steps, and the bounding box when nothing else holds the whole part.
 
 from __future__ import annotations
 
-import contextlib
-import copy
 import itertools
 import math
 import time
@@ -317,353 +315,64 @@ def _self_turned_stock(ctx: Context):
 #: Stock must hold at least this share of the part, or it is not stock.
 HOLDS = 0.995
 
-#: Slices to aim for along a silhouette axis, and the most that are worth taking.
-SLICE_TARGET = 48
-SLICE_LIMIT = 60
+#: Most places along an axis a stepped billet may choose its steps from.
+SLICE_LIMIT = 120
 
 #: A second silhouette earns its place in the script only by this much.
 SHADOW_GAIN = 0.98
 
-#: Seconds to spend looking for a silhouette billet along one axis, and in total.
-#: A part whose shadow is nothing like itself, a bent tube say, can spend minutes on
-#: a billet that is still twenty times its own size. Giving up on the clock costs
-#: nothing that was going to be worth having.
-AXIS_BUDGET = 90.0
+#: Seconds to spend building outline billets before settling for what else there is.
 STOCK_BUDGET = 240.0
 
-def _fuse_columns(columns: list, deadline: float | None = None, size=None):
-    """Fuse the slice columns into one billet, in pairs and cleaned.
-
-    A chain of fuses re-sews everything built so far at every step, so the last few
-    columns each cost as much as all the rest; pairing keeps the shapes small until
-    there are only a handful left. Every fuse is cleaned, because the columns overlap
-    heavily and the split faces a fuse leaves behind are carried into every boolean
-    after it, which is how a tidy billet turns into one that takes minutes to
-    intersect with anything. A pair the kernel refuses is left for the next round to
-    try against a different partner rather than thrown away, since dropping a column
-    puts a hole in the billet.
-    """
-
-    measure = size or (lambda shape: shape.volume)
-
-    def join(left, right):
-        for attempt in (lambda: left.fuse(right).clean(), lambda: left.fuse(right)):
-            try:
-                made = attempt()
-                if made is not None and measure(made) > 0:
-                    return made
-            except Exception:  # noqa: BLE001 - a refused fuse is retried or deferred
-                continue
-        return None
-
-    rounds = 2 * len(columns) + 4
-    while len(columns) > 1 and rounds > 0:
-        rounds -= 1
-        if deadline is not None and time.monotonic() > deadline:
-            return None
-        merged, deferred = [], []
-        for left, right in itertools.zip_longest(columns[::2], columns[1::2]):
-            if right is None:
-                merged.append(left)
-                continue
-            made = join(left, right)
-            if made is None:
-                deferred.extend((left, right))
-            else:
-                merged.append(made)
-        if not merged:
-            return None  # nothing in this set will join to anything
-        # Rotate the leftovers so a pair that would not join is not offered again.
-        columns = merged + deferred[1:] + deferred[:1]
-    return columns[0] if len(columns) == 1 else None
-
-
-def _glue(pieces: list):
-    """Join prisms that share faces but never overlap, in one call.
-
-    A flat union comes back as many faces sharing edges, so its prisms touch along
-    whole faces. That is the slowest input there is for an ordinary fuse, and one such
-    fuse ran for over ten minutes on a part with ten faces. The kernel's glue mode is
-    made for exactly this arrangement and treats it as bookkeeping.
-    """
-    try:
-        joined = pieces[0].fuse(*pieces[1:], glue=True)
-        with contextlib.suppress(Exception):  # an uncleaned billet is still a billet
-            joined = joined.clean()
-        # The prisms never overlap, so a sound result holds exactly their total volume.
-        # Glue can come back broken without saying so; this is how that shows.
-        expected = sum(float(piece.volume) for piece in pieces)
-        if not joined.solids() or abs(float(joined.volume) - expected) > 0.01 * expected:
-            return None
-        return joined
-    except Exception:  # noqa: BLE001 - fall back to the ordinary fuse
-        return None
-
-
 def _slice_gaps(part: Part, index: int, ctx: Context):
-    """Where to slice along an axis: at vertex positions, long slices split.
+    """Where the part's geometry changes along an axis: its vertex positions.
 
-    Returns the slices and whether they still tile the whole axis: past a limit the
-    shortest are dropped, which a shadow can tolerate and a stepped billet cannot.
+    A step in a stepped billet can only break at one of these, which is where a
+    designer's steps are. Returns the slices between them and whether there are few
+    enough to be steps at all.
     """
     low, high = ctx.bb_min[index], ctx.bb_max[index]
     marks = sorted({round(v.to_tuple()[index], 4) for v in part.vertices()})
     cuts = [low] + [x for x in marks if low < x < high] + [high]
     gaps = [(a, b) for a, b in itertools.pairwise(cuts) if b - a > (high - low) * 1e-6]
-    tiled = len(gaps) <= SLICE_LIMIT
-    if not tiled:
-        gaps = sorted(sorted(gaps, key=lambda gap: gap[0] - gap[1])[:SLICE_LIMIT])
-    # Sections are sampled inside each slice, so on a taper or a curve every slice
-    # loses the material between its sample and its ends. Splitting the long ones
-    # shrinks that loss without moving the cut planes any closer to the part's faces.
-    while gaps and len(gaps) < SLICE_TARGET:
-        widest = max(range(len(gaps)), key=lambda i: gaps[i][1] - gaps[i][0])
-        begin, stop = gaps[widest]
-        if stop - begin <= (high - low) * 1e-4:
-            break
-        middle = (begin + stop) / 2
-        gaps[widest : widest + 1] = [(begin, middle), (middle, stop)]
-    return gaps, tiled
+    return gaps, len(gaps) <= SLICE_LIMIT
 
 
-def _slice_sections(part: Part, index: int, ctx: Context, deadline: float | None = None):
-    """Cut the part into slices along one axis and take the cross section in each.
+def _outline_source(outline, ctx: Context):
+    """Draw one chosen outline from the part's mesh; a function writing its source.
 
-    Slices break where the geometry changes, at vertex positions, and long ones are
-    split so a taper or a curve loses little between samples. Returns the slices as
-    (start, finish, faces) with each face the outer boundary of a section, lying at
-    its own position, and whether the slices still tile the whole axis: past a limit
-    the shortest are dropped, which a shadow can tolerate and a stepped billet cannot.
+    The outline is worked out in 2D, from the mesh, with shapely: the shadow of every
+    surface, or of each step's stretch, with holes filled, grown by the mesh tolerance
+    and simplified. The kernel's own 2D union split outlines into dozens of slivers and
+    gluing their prisms back together could stall for minutes; none of that is needed
+    now, and the kernel only runs the source that comes out, once.
     """
-    from build123d import Axis, Box, Pos, make_face
+    from .geom import _mesh_for
+    from .inside import DEFLECTION_SHARE
+    from .outlines import outline_polygons, polygon_source
 
-    axis = (Axis.X, Axis.Y, Axis.Z)[index]
-    oversize = [ctx.bb_max[k] - ctx.bb_min[k] + 2 * ctx.margin for k in range(3)]
-    gaps, tiled = _slice_gaps(part, index, ctx)
-
-    # Slice a copy. These booleans widen the tolerances of what they are given, and the
-    # part is the reference every later measurement is taken against.
-    scratch = copy.deepcopy(part)
-    slices = []
-    for start, finish in gaps:
-        if deadline is not None and time.monotonic() > deadline:
-            return None, False
-        centre = [(ctx.bb_max[k] + ctx.bb_min[k]) / 2 for k in range(3)]
-        centre[index] = (start + finish) / 2
-        thickness = list(oversize)
-        # Half the slice, so the cut planes stay well clear of the part's own faces
-        # at either end. Coincident faces make the intersection drop pieces, and a
-        # slab that has lost a piece quietly hands back a stock full of holes.
-        thickness[index] = (finish - start) * 0.5
-        found = []
-        piece = scratch & (Pos(*centre) * Box(*thickness))
-        if piece is not None and piece.solids():
-            for face in piece.faces().filter_by(axis):
-                try:
-                    # A hole in the section is still solid billet, so only the outer wire.
-                    filled = make_face(face.outer_wire())
-                except Exception:  # noqa: BLE001 - a section that will not build is skipped
-                    continue
-                if filled is not None and filled.area > 0:
-                    found.append((filled, face.center().to_tuple()[index]))
-        slices.append((start, finish, found))
-    return slices, tiled
-
-
-def _moved_along(face, index: int, distance: float):
-    from build123d import Pos
-
-    offset = [0.0, 0.0, 0.0]
-    offset[index] = distance
-    return Pos(*offset) * face
-
-
-def _envelope_of(ctx: Context):
-    from build123d import Box, Pos
-
-    size = tuple(ctx.bb_max[k] - ctx.bb_min[k] for k in range(3))
-    centre = tuple((ctx.bb_max[k] + ctx.bb_min[k]) / 2 for k in range(3))
-    return Pos(*centre) * Box(*size)
-
-
-def _silhouette_solid(
-    part: Part, index: int, ctx: Context, deadline: float | None = None, sliced=None
-):
-    """The part's own shadow along one axis, run back out to a solid billet.
-
-    Plate and sheet parts are cut from their own outline, so their silhouette is the
-    billet rather than a clever approximation of one. Every section is laid on one
-    plane, since every column runs the same length in the same direction and the
-    union of the columns is one column of the union of their sections; joining them
-    flat is a 2D problem the kernel handles quickly, where joining sixty overlapping
-    solids once took three hours in a single call.
-    """
-    from build123d import extrude
-
-    direction = tuple(1.0 if k == index else 0.0 for k in range(3))
-    low, high = ctx.bb_min[index], ctx.bb_max[index]
-    reach = (high - low) + 2 * ctx.margin
-    slices, _tiled = sliced or _slice_sections(part, index, ctx, deadline)
-    if slices is None:
-        return None
-    floor = low - ctx.margin
-    columns = [
-        _moved_along(face, index, floor - position)
-        for _start, _finish, found in slices
-        for face, position in found
-    ]
-    if not columns:
-        return None
-    envelope = _envelope_of(ctx)
-
-    def extruded(faces):
-        try:
-            return [extrude(face, amount=reach, dir=direction) for face in faces]
-        except Exception:  # noqa: BLE001 - a face that will not extrude spoils the set
-            return None
-
-    def flat_first():
-        # Join the sections flat, then extrude once and glue the prisms.
-        shadow = _fuse_columns(list(columns), deadline, size=lambda shape: shape.area)
-        pieces = extruded(shadow.faces()) if shadow is not None else None
-        if not pieces:
-            return None
-        return pieces[0] if len(pieces) == 1 else _glue(pieces)
-
-    # The flat union is quick but can drop a region without a word, and everything
-    # after it is then consistent with the wrong shape, so it is held to containment.
-    # There is no slower way round: joining the columns as solids is where the kernel
-    # has hung and crashed, and the chooser has other outlines to offer instead.
-    try:
-        stock = flat_first()
-        if stock is None:
-            return None
-        clipped = stock & envelope
-        if clipped.solids() and clipped.volume > 0 and ctx.held_by(clipped) >= HOLDS:
-            return clipped
-    except Exception:  # noqa: BLE001 - an outline that will not build is not offered
-        return None
-    return None
-
-
-def _prism_source(solid, index: int, ctx: Context, target: str) -> list[str] | None:
-    """Source that redraws one silhouette billet, assigned to ``target``."""
-    from build123d import Axis
-
-    from .adapters import face_profile_source
-
-    axis = (Axis.X, Axis.Y, Axis.Z)[index]
-    outward = tuple(1.0 if k == index else 0.0 for k in range(3))
-    caps = solid.faces().filter_by(axis)
-    if not caps:
-        return None
-    top = max(face.center().to_tuple()[index] for face in caps)
-    depth = ctx.bb_max[index] - ctx.bb_min[index]
-
-    code, pieces = [], 0
-    for face in caps:
-        if abs(face.center().to_tuple()[index] - top) > depth * 1e-3:
-            continue
-        drawn = face_profile_source(face, tuple(-v for v in outward))
-        if drawn is None:
-            return None
-        pieces += 1
-        code.extend(drawn[0])
-        assign = f"{target} =" if pieces == 1 else f"{target} +="
-        code.append(f"{assign} extrude(_plane * make_face(_prof), amount={fmt(depth)})")
-    return code if pieces else None
-
-
-def _stepped_source(pieces, index: int, target: str) -> list[str] | None:
-    """Source that redraws a stepped billet: one extrusion per step outline.
-
-    A step's outline is the union of the sections in it. That union can come back with
-    an outline that will not chain into a clean profile, and then the step is written
-    as its separate sections, each run across the step: longer, but the same step.
-    """
-    from .adapters import face_profile_source
-
-    direction = tuple(1.0 if k == index else 0.0 for k in range(3))
-    code, count = [], 0
-    for _start, length, faces, raw in pieces:
-        drawn = [face_profile_source(face, direction) for face in faces]
-        if any(entry is None for entry in drawn):
-            # Fall back to the step's separate sections only while that stays a drawing.
-            if len(raw) > MOST_EXTRUSIONS:
-                return None
-            drawn = [face_profile_source(face, direction) for face in raw]
-            if any(entry is None for entry in drawn):
-                return None
-        for entry in drawn:
-            code.extend(entry[0])
-            assign = f"{target} =" if count == 0 else f"{target} +="
-            code.append(f"{assign} extrude(_plane * make_face(_prof), amount={fmt(length)})")
-            count += 1
-    return code if count else None
-
-
-def _stepped_from_steps(slices, index: int, ctx: Context, steps, deadline=None):
-    """The stepped billet as chosen: every section in a step joined, run across the step.
-
-    Returns the solid and the pieces as (start, length, faces), faces lying at start.
-    """
-    from build123d import extrude
-
-    direction = tuple(1.0 if k == index else 0.0 for k in range(3))
-    pieces = []
-    for low, high in steps:
-        faces = [
-            _moved_along(face, index, low - position)
-            for start, finish, found in slices
-            if start >= low - 1e-9 and finish <= high + 1e-9
-            for face, position in found
-        ]
-        if not faces:
-            continue  # a step with no section is space between separate bodies
-        raw = [part for face in faces for part in face.faces()]
-        if len(faces) > 1:
-            joined = _fuse_columns(list(faces), deadline, size=lambda shape: shape.area)
-            faces = list(joined.faces()) if joined is not None else raw
-        pieces.append((low, high - low, faces, raw))
-    if not pieces:
-        return None
-    try:
-        prisms = [
-            extrude(face, amount=length, dir=direction)
-            for _low, length, faces, _raw in pieces
-            for face in faces
-        ]
-    except Exception:  # noqa: BLE001 - a section that will not extrude spoils the billet
-        return None
-    stock = prisms[0] if len(prisms) == 1 else _glue(prisms)
-    if stock is None:
-        return None
-    clipped = stock & _envelope_of(ctx)
-    if not clipped.solids() or clipped.volume <= 0:
-        return None
-    return clipped, pieces
-
-
-def _outline_source(outline, ctx: Context, sliced: dict, deadline):
-    """Build one chosen outline and return a function writing its source, or None."""
+    triangles = _mesh_for(ctx.part).triangles
+    tolerance = max(ctx.diagonal * DEFLECTION_SHARE, 1e-4)
     index = outline.index
-    if index not in sliced:
-        sliced[index] = _slice_sections(ctx.part, index, ctx, deadline)
-    slices, tiled = sliced[index]
-    if slices is None:
-        return None
+    envelope = (ctx.bb_min, ctx.bb_max)
     if outline.kind == "shadow":
-        solid = _silhouette_solid(ctx.part, index, ctx, deadline, (slices, tiled))
-        if solid is None:
-            return None
-        return lambda target: _prism_source(solid, index, ctx, target)
-    if not tiled:
+        low, high = ctx.bb_min[index], ctx.bb_max[index]
+        pieces = [
+            (low, high - low, outline_polygons(triangles, index, tolerance, envelope=envelope))
+        ]
+    else:
+        pieces = [
+            (
+                low,
+                high - low,
+                outline_polygons(triangles, index, tolerance, low, high, envelope=envelope),
+            )
+            for low, high in outline.marks
+        ]
+    drawn = sum(len(polygons) for _start, _length, polygons in pieces)
+    if drawn == 0 or drawn > MOST_EXTRUSIONS:
         return None
-    made = _stepped_from_steps(slices, index, ctx, outline.marks, deadline)
-    if made is None:
-        return None
-    _solid, pieces = made
-    return lambda target: _stepped_source(pieces, index, target)
+    return lambda target: polygon_source(pieces, index, target)
 
 
 #: Most extrusions an outline billet may take before it stops being the billet a
@@ -695,16 +404,14 @@ def _silhouette_stock(ctx: Context) -> tuple[str, list[str], float] | None:
     candidates = estimator.candidates()
 
     stop_at = time.monotonic() + STOCK_BUDGET
-    sliced: dict = {}
     while candidates:
         chosen = choose(candidates, ctx.bb_min, ctx.bb_max, SHADOW_GAIN, MOST_EXTRUSIONS)
         if not chosen or time.monotonic() > stop_at:
             return None
         sources, failed = [], None
         for outline in chosen:
-            deadline = min(stop_at, time.monotonic() + AXIS_BUDGET)
             try:
-                source = _outline_source(outline, ctx, sliced, deadline)
+                source = _outline_source(outline, ctx)
                 written = source("_shadow") if source is not None else None
             except Exception:  # noqa: BLE001 - an outline that will not build is dropped
                 written = None

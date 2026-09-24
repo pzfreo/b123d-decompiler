@@ -224,6 +224,8 @@ def choose(candidates: list[Outline], low, high, gain: float, most_extrusions: i
         for candidate in usable:
             if candidate is first or extrusions + candidate.extrusions > most_extrusions:
                 continue
+            if any(taken.index == candidate.index for taken in chosen):
+                continue  # two outlines along one axis are just a finer stepping
             merged = current & inside[id(candidate)]
             if merged.sum() > current.sum() * gain:
                 continue
@@ -233,3 +235,137 @@ def choose(candidates: list[Outline], low, high, gain: float, most_extrusions: i
         if score < best_score:
             best, best_score = chosen, score
     return best or []
+
+
+# ── building the chosen outline ─────────────────────────────────────────
+
+
+def _plane_uv(points: np.ndarray, index: int) -> np.ndarray:
+    """Coordinates in the drawing plane of an axis, as the emitted Plane will read them.
+
+    The plane has its x along the first remaining world axis and its normal along the
+    axis itself, so its own y runs along the second remaining axis, reversed when the
+    axis is y.
+    """
+    first, second = (k for k in range(3) if k != index)
+    sign = -1.0 if index == 1 else 1.0
+    return np.stack([points[..., first], sign * points[..., second]], axis=-1)
+
+
+def _projected(triangles: np.ndarray, index: int):
+    """The union of triangles projected across an axis, as a shapely geometry."""
+    import shapely
+
+    flat = _plane_uv(triangles, index)
+    area = 0.5 * np.abs(
+        (flat[:, 1, 0] - flat[:, 0, 0]) * (flat[:, 2, 1] - flat[:, 0, 1])
+        - (flat[:, 2, 0] - flat[:, 0, 0]) * (flat[:, 1, 1] - flat[:, 0, 1])
+    )
+    flat = flat[area > 1e-12]
+    if not len(flat):
+        return None
+    rings = np.concatenate([flat, flat[:, :1]], axis=1)
+    return shapely.union_all(shapely.polygons(rings))
+
+
+def _section(triangles: np.ndarray, index: int, at: float):
+    """The part's cross section at one position along an axis, as a shapely geometry."""
+    import shapely
+
+    height = triangles[:, :, index] - at
+    above = height > 0
+    crossing = above.any(axis=1) & ~above.all(axis=1)
+    segments = []
+    for triangle, h in zip(triangles[crossing], height[crossing], strict=True):
+        ends = []
+        for a, b in ((0, 1), (1, 2), (2, 0)):
+            if (h[a] > 0) != (h[b] > 0):
+                t = h[a] / (h[a] - h[b])
+                ends.append(triangle[a] + t * (triangle[b] - triangle[a]))
+        if len(ends) == 2:
+            segments.append(_plane_uv(np.asarray(ends), index))
+    if not segments:
+        return None
+    lines = shapely.multilinestrings(np.asarray(segments))
+    faces = shapely.polygonize(shapely.get_parts(shapely.node(lines)))
+    return shapely.union_all(shapely.get_parts(faces)) if not faces.is_empty else None
+
+
+def outline_polygons(triangles: np.ndarray, index: int, tolerance: float,
+                     low: float | None = None, high: float | None = None,
+                     envelope=None) -> list:
+    """The outline a billet is drawn from, as simple polygons that hold the part.
+
+    Without bounds it is the part's whole shadow across the axis. With bounds it is
+    the shadow of the stretch between them: every surface there, projected, and the
+    sections just inside each end, which cover a stretch that is solid right through
+    and so has no surface inside it. Holes are filled, since a billet has none. The
+    outline is grown by twice the mesh tolerance, because a mesh's chords lie inside
+    the curves they stand for, and simplified by one, so it has few corners and still
+    holds the part.
+    """
+    import shapely
+
+    if low is None:
+        chosen = triangles
+        pieces = [_projected(chosen, index)]
+    else:
+        span = triangles[:, :, index]
+        chosen = triangles[(span.max(axis=1) >= low) & (span.min(axis=1) <= high)]
+        inset = (high - low) * 1e-3
+        pieces = [
+            _projected(chosen, index) if len(chosen) else None,
+            _section(triangles, index, low + inset),
+            _section(triangles, index, high - inset),
+        ]
+    pieces = [p for p in pieces if p is not None and not p.is_empty]
+    if not pieces:
+        return []
+    region = shapely.union_all(pieces)
+    filled = [
+        shapely.Polygon(part.exterior)
+        for part in shapely.get_parts(region)
+        if isinstance(part, shapely.Polygon) and part.area > tolerance**2
+    ]
+    region = shapely.union_all(filled).buffer(2 * tolerance, join_style="mitre", mitre_limit=2.0)
+    region = region.simplify(tolerance, preserve_topology=True)
+    if envelope is not None:
+        # Growing the outline pushes flat sides past the part's box, and the billet
+        # has no business being wider than the part anywhere.
+        corners = _plane_uv(np.asarray(envelope), index)
+        region = region.intersection(
+            shapely.box(*corners.min(axis=0), *corners.max(axis=0))
+        )
+    return [
+        shapely.Polygon(part.exterior)
+        for part in shapely.get_parts(region)
+        if isinstance(part, shapely.Polygon)
+    ]
+
+
+def polygon_source(pieces, index: int, target: str) -> list[str]:
+    """Source for a billet drawn as polygons, each extruded across its stretch.
+
+    `pieces` is a list of (start, length, polygons). One statement draws each outline
+    and one extrudes it, which is how a designer would sketch and pull it.
+    """
+    from .model import fmt, fmt_tuple
+
+    x_dir = tuple(1.0 if k == next(j for j in range(3) if j != index) else 0.0 for k in range(3))
+    z_dir = tuple(1.0 if k == index else 0.0 for k in range(3))
+    code, count = [], 0
+    for start, length, polygons in pieces:
+        origin = tuple(start if k == index else 0.0 for k in range(3))
+        for polygon in polygons:
+            points = [fmt_tuple((u, v)) for u, v in list(polygon.exterior.coords)[:-1]]
+            rows = [", ".join(points[i : i + 6]) for i in range(0, len(points), 6)]
+            joined = ",\n    ".join(rows)
+            code.append(f"_prof = Polyline(\n    {joined},\n    close=True,\n)")
+            code.append(
+                f"_plane = Plane(origin={fmt_tuple(origin)}, x_dir={fmt_tuple(x_dir)}, "
+                f"z_dir={fmt_tuple(z_dir)})"
+            )
+            assign = f"{target} =" if count == 0 else f"{target} +="
+            code.append(f"{assign} extrude(_plane * make_face(_prof), amount={fmt(length)})")
+            count += 1
+    return code
