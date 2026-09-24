@@ -203,7 +203,7 @@ def _accept_unverified(plan: BuildPlan) -> None:
             op.note = "; ".join(filter(None, [op.note, "not checked against the part"]))
 
 
-def _verify(plan: BuildPlan, ctx: Context):
+def _verify(plan: BuildPlan, ctx: Context, overlaps: dict | None = None):
     """Judge every op against the reference, then against the sequence it belongs to.
 
     Fuses are settled first because a cut is only wrong where no fuse puts the material
@@ -219,16 +219,21 @@ def _verify(plan: BuildPlan, ctx: Context):
         if tool is not None and op.status == model.PLANNED and op.kind == "fuse":
             _classify_fuse(op, tool, ctx, stock, cut_tools)
 
-    restorers = [
-        tools[i]
-        for i, op in enumerate(plan.ops)
-        if op.kind == "fuse" and op.status == model.OK and i in tools
-    ]
+    restoring = tuple(
+        i for i, op in enumerate(plan.ops) if op.kind == "fuse" and op.status == model.OK and i in tools
+    )
+    restorers = [tools[i] for i in restoring]
+    # How much real material a cut takes depends on the cut and on which fuses put some
+    # back, not on the billet, so when several billets are tried it is counted once.
+    overlaps = {} if overlaps is None else overlaps
     for position, op in enumerate(plan.ops):
         tool = tools.get(position)
         if tool is None or op.kind != "cut" or op.status != model.PLANNED:
             continue
-        op.overlap = round(material_volume(tool, ctx.part, restorers), 6)
+        key = (position, restoring)
+        if key not in overlaps:
+            overlaps[key] = round(material_volume(tool, ctx.part, restorers), 6)
+        op.overlap = overlaps[key]
         if (
             op.overlap / op.volume > OVERLAP_LIMIT
             or op.overlap > PART_LIMIT * ctx.part.volume
@@ -304,6 +309,7 @@ def _best_stock(
     from .stock import _complexity
 
     trials = []
+    overlaps: dict = {}
     started = time.monotonic()
     for label, code in stocks:
         # The first billet is always carried through; the rest only while there is time,
@@ -316,7 +322,7 @@ def _best_stock(
         began = time.monotonic()
         trial = copy.deepcopy(plan)
         trial.stock_label, trial.stock_code = label, list(code)
-        finished = _verify(trial, ctx)
+        finished = _verify(trial, ctx, overlaps)
         if len(stocks) == 1:
             trial.stock_trials = [
                 {"stock": label, "iou": None, "chosen": True,
