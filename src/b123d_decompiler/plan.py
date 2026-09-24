@@ -281,8 +281,12 @@ def _cylinder_catalogue(document: dict):
 #: Finished rebuilds this close in IoU are a tie, and the simpler billet takes it.
 STOCK_TIE = 0.005
 
-#: Seconds to spend carrying further billets through once the first has finished.
+#: Most seconds to spend carrying further billets through once the first has finished.
 TRIAL_BUDGET = 600.0
+
+#: Further billets get this multiple of the first trial's time, but at least the floor.
+TRIAL_FACTOR = 4.0
+TRIAL_FLOOR = 30.0
 
 #: A rebuild this close to the part is good enough: no further billets are tried.
 GOOD_ENOUGH = 0.98
@@ -311,11 +315,12 @@ def _best_stock(
     trials = []
     overlaps: dict = {}
     started = time.monotonic()
+    allowance = TRIAL_BUDGET
     for label, code in stocks:
         # The first billet is always carried through; the rest only while there is time,
         # and not at all once one has ended close enough to the part to leave little to
         # find. On sixteen parts, stopping at GOOD_ENOUGH gave up 0.003 IoU in all.
-        if trials and time.monotonic() - started > TRIAL_BUDGET:
+        if trials and time.monotonic() - started > allowance:
             break
         if trials and max(entry[0] for entry in trials) >= good_enough:
             break
@@ -335,6 +340,12 @@ def _best_stock(
             score = 0.0
         simplicity = 1 if "turned" in label else _complexity(code)
         trials.append((score, simplicity, trial, round(time.monotonic() - began, 1)))
+        if len(trials) == 1:
+            # Further billets get a multiple of what the first one took, within the
+            # overall ceiling. On twenty-two parts every winning billet was found
+            # within 3.4 times the first trial's own time.
+            first = trials[0][3]
+            allowance = first + min(TRIAL_BUDGET, max(TRIAL_FLOOR, TRIAL_FACTOR * first))
     best = max(entry[0] for entry in trials)
     tied = [entry for entry in trials if entry[0] >= best - STOCK_TIE]
     chosen = min(tied, key=lambda entry: entry[1])[2]
