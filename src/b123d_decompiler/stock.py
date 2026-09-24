@@ -380,65 +380,76 @@ def _outline_source(outline, ctx: Context):
 MOST_EXTRUSIONS = 8
 
 
+#: How many of the most plausible combinations are built and measured.
+BUILT_COMBINATIONS = 6
+
+
 def _silhouette_stock(ctx: Context) -> tuple[str, list[str], float] | None:
-    """The billet the part's own outlines cut out, chosen by counting, built once.
+    """The billet the part's own outlines cut out: ranked by counting, chosen by measuring.
 
     Every outline, a shadow and a stepped billet along each axis, is scored against
-    rasters read off the part's mesh, and so is every intersection of them. Only the
-    combination chosen is built. A plate is its own outline; a plate with something
-    formed into it needs two outlines intersected, since each shadow smears the formed
-    region along its whole length; a part drawn as a few extrusions is a stepped
-    billet. Anything that would take more than MOST_EXTRUSIONS extrusions is not a
-    billet anyone would draw, so it is not offered.
+    rasters read off the part's mesh, and so is every combination of them. A plate is
+    its own outline; a plate with something formed into it needs two outlines
+    intersected, since each shadow smears the formed region along its whole length; a
+    part drawn as a few extrusions is a stepped billet. Anything over MOST_EXTRUSIONS
+    extrusions is not a billet anyone would draw, so it is not offered.
 
-    If the chosen outline cannot be built, the next choice without it is tried.
+    The rasters rank close combinations wrongly often enough to matter: on one part the
+    plainest combination, two shadows, was estimated the largest and built the
+    smallest. Drawing an outline takes a second or two, so the most plausible few are
+    built, measured, and the one with the least volume per extrusion that holds the
+    whole part is kept.
     """
     from .geom import _mesh_for
-    from .outlines import OutlineEstimator, choose
+    from .outlines import EXTRUSION_COST, OutlineEstimator, ranked
 
     marks = {}
     for index in range(3):
         gaps, tiled = _slice_gaps(ctx.part, index, ctx)
         marks[index] = ([g[0] for g in gaps] + [gaps[-1][1]]) if (gaps and tiled) else []
     estimator = OutlineEstimator(_mesh_for(ctx.part), ctx.bb_min, ctx.bb_max, marks)
-    candidates = estimator.candidates()
+    combinations = ranked(
+        estimator.candidates(), ctx.bb_min, ctx.bb_max, SHADOW_GAIN, MOST_EXTRUSIONS
+    )
 
     stop_at = time.monotonic() + STOCK_BUDGET
-    while candidates:
-        chosen = choose(candidates, ctx.bb_min, ctx.bb_max, SHADOW_GAIN, MOST_EXTRUSIONS)
-        if not chosen or time.monotonic() > stop_at:
-            return None
-        sources, failed = [], None
+    sources: dict = {}
+    best, tried = None, 0
+    for chosen in combinations:
+        if tried >= BUILT_COMBINATIONS or time.monotonic() > stop_at:
+            break
+        writers = []
         for outline in chosen:
-            try:
-                source = _outline_source(outline, ctx)
-                written = source("_shadow") if source is not None else None
-            except Exception:  # noqa: BLE001 - an outline that will not build is dropped
-                written = None
-            if written is None:
-                failed = outline
-                break
-            sources.append(source)
-        if failed is not None:
-            candidates = [c for c in candidates if c is not failed]
+            if id(outline) not in sources:
+                try:
+                    source = _outline_source(outline, ctx)
+                    sources[id(outline)] = source if source and source("_shadow") else None
+                except Exception:  # noqa: BLE001 - an outline that will not draw is not used
+                    sources[id(outline)] = None
+            writers.append(sources[id(outline)])
+        if any(writer is None for writer in writers):
             continue
-
-        code = sources[0]("part")
-        for source in sources[1:]:
-            code.extend(source("_shadow"))
+        tried += 1
+        code = writers[0]("part")
+        for writer in writers[1:]:
+            code.extend(writer("_shadow"))
             code.append("part = part & _shadow")
-        # Judge the source, not the estimate or the solids it was traced from: curves
-        # are written out as chords, and a chord falls inside the arc it stands for.
+        # Judge the source, not the estimate: curves are written out as chords, and a
+        # chord falls inside the arc it stands for.
         try:
             drawn = run_source(code, "part")
         except Exception:  # noqa: BLE001 - a stock that will not run is not stock
-            drawn = None
-        if drawn is None or drawn.volume <= 0 or not is_sound(drawn) or ctx.held_by(drawn) < HOLDS:
-            candidates = [c for c in candidates if c is not chosen[-1]]
             continue
-        names = ", ".join(outline.name for outline in chosen)
-        return f"stock: the part's own outline, {names}", code, drawn.volume
-    return None
+        if drawn is None or drawn.volume <= 0 or not is_sound(drawn):
+            continue
+        if ctx.held_by(drawn) < HOLDS:
+            continue
+        extrusions = sum(line.count("extrude(") for line in code)
+        cost = float(drawn.volume) * (1 + EXTRUSION_COST * extrusions)
+        if best is None or cost < best[0]:
+            names = ", ".join(outline.name for outline in chosen)
+            best = (cost, f"stock: the part's own outline, {names}", code, float(drawn.volume))
+    return None if best is None else best[1:]
 
 
 def _isolated_silhouette_stock(ctx: Context):
@@ -537,5 +548,21 @@ def stock_source(ctx: Context, document: dict) -> tuple[str, list[str]]:
     if outline is not None:
         candidates.append((outline[2], (outline[0], outline[1])))
     if candidates:
-        return min(candidates, key=lambda entry: entry[0])[1]
+        return min(candidates, key=lambda entry: _drawing_cost(*entry))[1]
     return _envelope_stock(ctx)
+
+
+def _drawing_cost(volume: float, stock) -> float:
+    """Volume, charged for every extrusion it takes to draw, as the outline chooser is.
+
+    A turned bar is one profile revolved, however many diameters it steps through, and
+    it says the part was turned, which the turned treatments after it depend on. An
+    outline that is barely smaller but takes several extrusions is the worse reading:
+    on a flanged spool the two were within 0.6 % and the outline took 209 lines to the
+    bar's 38, and lost the part four points of IoU.
+    """
+    from .outlines import EXTRUSION_COST
+
+    _label, code = stock
+    pieces = 1 if "turned" in _label else max(1, sum(line.count("extrude(") for line in code))
+    return volume * (1 + EXTRUSION_COST * pieces)

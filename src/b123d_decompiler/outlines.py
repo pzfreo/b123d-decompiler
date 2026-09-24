@@ -22,7 +22,6 @@ samples. They are only estimates; the billet that is built is held to the exact 
 from __future__ import annotations
 
 import itertools
-import math
 
 import numpy as np
 
@@ -200,15 +199,16 @@ class OutlineEstimator:
 EXTRUSION_COST = 0.03
 
 
-def choose(candidates: list[Outline], low, high, gain: float, most_extrusions: int,
-           points: int = 40000) -> list[Outline]:
-    """The combination of outlines a designer would most plausibly have started from.
+def ranked(candidates: list[Outline], low, high, gain: float, most_extrusions: int,
+           points: int = 40000) -> list[list[Outline]]:
+    """Combinations of outlines a designer might have started from, most plausible first.
 
     Each candidate is tried as the first outline, and others are intersected with it
-    in order of size while each takes away at least `1 - gain` of what is left and the
-    whole stays within `most_extrusions`. Of the combinations that gives, the one kept
-    has the least volume once every extrusion is charged EXTRUSION_COST of it: a
-    billet one extrusion longer has to be that much tighter to be the better reading.
+    in order of size while each takes away at least `1 - gain` of what is left, the
+    whole stays within `most_extrusions`, and no axis is used twice. Every combination
+    is scored by its volume with each extrusion charged EXTRUSION_COST of it. These
+    are estimates from rasters and can rank close candidates wrongly, so the caller
+    builds the first few and measures them.
     """
     low, high = np.asarray(low), np.asarray(high)
     places = np.random.default_rng(20260924).uniform(low, high, size=(points, 3))
@@ -218,7 +218,7 @@ def choose(candidates: list[Outline], low, high, gain: float, most_extrusions: i
     inside = {id(c): c.contains(places) for c in usable}
     usable.sort(key=lambda c: inside[id(c)].sum())
 
-    best, best_score = None, math.inf
+    found = {}
     for first in usable:
         chosen, current, extrusions = [first], inside[id(first)].copy(), first.extrusions
         for candidate in usable:
@@ -231,10 +231,11 @@ def choose(candidates: list[Outline], low, high, gain: float, most_extrusions: i
                 continue
             chosen.append(candidate)
             current, extrusions = merged, extrusions + candidate.extrusions
+        key = tuple(sorted(id(c) for c in chosen))
         score = current.sum() * (1 + EXTRUSION_COST * extrusions)
-        if score < best_score:
-            best, best_score = chosen, score
-    return best or []
+        if key not in found or score < found[key][0]:
+            found[key] = (score, chosen)
+    return [chosen for _score, chosen in sorted(found.values(), key=lambda entry: entry[0])]
 
 
 # ── building the chosen outline ─────────────────────────────────────────
@@ -266,6 +267,39 @@ def _projected(triangles: np.ndarray, index: int):
         return None
     rings = np.concatenate([flat, flat[:, :1]], axis=1)
     return shapely.union_all(shapely.polygons(rings))
+
+
+def _clipped(triangles: np.ndarray, index: int, low: float, high: float) -> np.ndarray:
+    """The parts of the triangles lying between two positions along an axis, as triangles.
+
+    A long face reaches across several steps, and projecting all of it into each one
+    makes every step as wide as the whole shadow; only the piece inside the step counts.
+    Triangles wholly inside pass through, those wholly outside are dropped, and the
+    rest are cut by the two planes and fanned back into triangles.
+    """
+    height = triangles[:, :, index]
+    inside = (height.min(axis=1) >= low) & (height.max(axis=1) <= high)
+    outside = (height.max(axis=1) < low) | (height.min(axis=1) > high)
+    kept = [triangles[inside]]
+    for triangle in triangles[~inside & ~outside]:
+        polygon = list(triangle)
+        for limit, keep_above in ((low, True), (high, False)):
+            clipped = []
+            for k in range(len(polygon)):
+                a, b = polygon[k], polygon[(k + 1) % len(polygon)]
+                a_in = a[index] >= limit if keep_above else a[index] <= limit
+                b_in = b[index] >= limit if keep_above else b[index] <= limit
+                if a_in:
+                    clipped.append(a)
+                if a_in != b_in:
+                    t = (limit - a[index]) / (b[index] - a[index])
+                    clipped.append(a + t * (b - a))
+            polygon = clipped
+            if len(polygon) < 3:
+                break
+        for k in range(1, len(polygon) - 1):
+            kept.append(np.asarray([[polygon[0], polygon[k], polygon[k + 1]]]))
+    return np.concatenate(kept) if kept else np.empty((0, 3, 3))
 
 
 def _section(triangles: np.ndarray, index: int, at: float, grid: float = 1e-6):
@@ -319,8 +353,7 @@ def outline_polygons(triangles: np.ndarray, index: int, tolerance: float,
         chosen = triangles
         pieces = [_projected(chosen, index)]
     else:
-        span = triangles[:, :, index]
-        chosen = triangles[(span.max(axis=1) >= low) & (span.min(axis=1) <= high)]
+        chosen = _clipped(triangles, index, low, high)
         inset = (high - low) * 1e-3
         pieces = [
             _projected(chosen, index) if len(chosen) else None,
