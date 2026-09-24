@@ -7,6 +7,8 @@ nothing from this package.
 
 from __future__ import annotations
 
+import textwrap
+
 from . import model
 from .model import BuildPlan, fmt_tuple
 
@@ -17,6 +19,7 @@ Decompiled by b123d-decompiler from quiddity feature recognition.
 """
 
 from build123d import *  # noqa: F403
+from build123d import SkipClean
 '''
 
 
@@ -66,14 +69,28 @@ def render(
     out.append(f"# {plan.stock_label}")
     out.extend(plan.stock_code)
 
+    if emitted:
+        out += [
+            "",
+            "# The features, cut in without tidying faces after each one. build123d merges",
+            "# coplanar faces after every boolean, and on a part with many cuts that step",
+            "# can take far longer than the cuts themselves. The shape is the same either way.",
+            "with SkipClean():",
+        ]
+    body = []
     for op in emitted:
-        out.append("")
+        body.append("")
         flag = "  <-- " + op.note if op.status == model.OVERLAPS else ""
-        out.append(f"# {op.family} #{op.index}: {op.label}{flag}")
+        body.append(f"# {op.family} #{op.index}: {op.label}{flag}")
         if op.note and op.status != model.OVERLAPS:
-            out.append(f"# note: {op.note}")
-        out.extend(op.code)
-        out.append("part -= tool" if op.kind == "cut" else "part += tool")
+            body.append(f"# note: {op.note}")
+        body.extend(op.code)
+        body.append("part -= tool" if op.kind == "cut" else "part += tool")
+    out.extend(
+        textwrap.indent(line, "    ") if line else line
+        for chunk in body
+        for line in chunk.split("\n")
+    )
 
     if not keep_frame:
         frame = plan.frame

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 
-from build123d import Part
+from build123d import Part, SkipClean
 
 from . import model
 from .adapters import ADAPTERS, EVIDENCE_ONLY, propose_face_trims
@@ -152,7 +152,10 @@ def _reject_destructive(plan: BuildPlan, tools: dict[int, Part], stock: Part):
             continue
         try:
             before = float(part.volume)
-            candidate = part - tool if op.kind == "cut" else part + tool
+            # As the script does it: without tidying faces after each boolean, which on
+            # a heavily cut part can run on long after the cut itself has finished.
+            with SkipClean():
+                candidate = part - tool if op.kind == "cut" else part + tool
             if not candidate.solids() or candidate.volume <= 0.0:
                 raise ValueError("the part would be left empty")
             # A boolean can succeed, keep the volume and still leave a solid the kernel
