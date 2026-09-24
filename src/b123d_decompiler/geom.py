@@ -113,21 +113,32 @@ class Context:
         the input the kernel gets wrong: it returns an empty intersection and the
         candidate is thrown away for holding none of a part it holds entirely.
         """
+        inside = Context(stock)
+        found = self.points_inside(points)
+        held = sum(1 for spot in found if inside.inside_solid(spot))
+        return held / len(found) if found else 0.0
+
+    def points_inside(self, points: int = 4000) -> list:
+        """Random points in the envelope that fall inside the part, found once and kept.
+
+        Every candidate billet is judged against the same points, and on a part with
+        threads or free-form faces classifying a point is slow enough that doing it
+        afresh for each candidate was a third of the time the whole part took.
+        """
         import random
 
-        inside = Context(stock)
-        generator = random.Random(20260921)
-        found = held = 0
-        for _ in range(points):
-            spot = tuple(
-                generator.uniform(self.bb_min[k], self.bb_max[k]) for k in range(3)
-            )
-            if not self.inside_solid(spot):
-                continue
-            found += 1
-            if inside.inside_solid(spot):
-                held += 1
-        return held / found if found else 0.0
+        cache = self.__dict__.setdefault("_inside_cache", {})
+        if points not in cache:
+            generator = random.Random(20260921)
+            found = []
+            for _ in range(points):
+                spot = tuple(
+                    generator.uniform(self.bb_min[k], self.bb_max[k]) for k in range(3)
+                )
+                if self.inside_solid(spot):
+                    found.append(spot)
+            cache[points] = found
+        return cache[points]
 
     def corners(self):
         for i in range(8):
@@ -351,6 +362,26 @@ def shared_material(tool: Part, other: Part, reference: Part) -> tuple[float, fl
     return _volume(shared), (_volume(material) if material is not None else 0.0)
 
 
+_CLASSIFIERS: dict = {}
+
+
+def _context_for(shape: Part) -> Context:
+    """One classifier per shape, reused across calls.
+
+    The reference part is measured against hundreds of trims in a row, and building a
+    fresh classifier for it every time throws away everything the last one learned.
+    The shape is kept alongside so its id cannot be reused while the entry stands.
+    """
+    key = id(shape)
+    entry = _CLASSIFIERS.get(key)
+    if entry is None or entry[0] is not shape:
+        if len(_CLASSIFIERS) > 64:
+            _CLASSIFIERS.clear()
+        entry = (shape, Context(shape))
+        _CLASSIFIERS[key] = entry
+    return entry[1]
+
+
 def sampled_overlap_volume(tool: Part, reference: Part, restorers, points: int = 900) -> float:
     """How much of `tool` covers reference material, counted rather than intersected.
 
@@ -358,32 +389,43 @@ def sampled_overlap_volume(tool: Part, reference: Part, restorers, points: int =
     back with the wrong answer and no warning, which is the failure that matters here:
     a tool whose wall lies exactly on a face of the part is the case the kernel gets
     wrong, and it is also the most common shape of trim this tool proposes.
+
+    Points are thrown only where the tool's box and the part's box overlap, since no
+    material can be shared anywhere else. A trim mostly reaches out into open space,
+    so that puts the points where the answer is decided and classifies far fewer of
+    them against the part, which is the slow half of the question.
     """
     import random
 
-    box = tool.bounding_box()
-    low = (box.min.X, box.min.Y, box.min.Z)
-    high = (box.max.X, box.max.Y, box.max.Z)
+    tool_box, part_box = tool.bounding_box(), reference.bounding_box()
+    low = (
+        max(tool_box.min.X, part_box.min.X),
+        max(tool_box.min.Y, part_box.min.Y),
+        max(tool_box.min.Z, part_box.min.Z),
+    )
+    high = (
+        min(tool_box.max.X, part_box.max.X),
+        min(tool_box.max.Y, part_box.max.Y),
+        min(tool_box.max.Z, part_box.max.Z),
+    )
     span = [high[k] - low[k] for k in range(3)]
     if min(span) <= 0:
         return 0.0
+    volume = span[0] * span[1] * span[2]
 
     in_tool = Context(tool).inside_solid
-    in_reference = Context(reference).inside_solid
+    in_reference = _context_for(reference).inside_solid
     in_restorer = [Context(restorer).inside_solid for restorer in restorers]
 
     generator = random.Random(20260922)  # a fixed stream keeps the number repeatable
-    hits = shared = 0
+    shared = 0
     for _ in range(points):
         place = tuple(generator.uniform(low[k], high[k]) for k in range(3))
-        if not in_tool(place):
+        if not in_tool(place) or not in_reference(place):
             continue
-        hits += 1
-        if in_reference(place) and not any(back(place) for back in in_restorer):
+        if not any(back(place) for back in in_restorer):
             shared += 1
-    if not hits:
-        return 0.0
-    return float(tool.volume) * shared / hits
+    return min(volume * shared / points, float(tool.volume))
 
 
 def overlap_after_restore(tool: Part, reference: Part, restorers) -> float:

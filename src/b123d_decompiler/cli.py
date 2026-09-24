@@ -21,7 +21,7 @@ from .pipeline import (
     write_summary,
 )
 
-SUBCOMMANDS = ("decompile", "analyse", "batch", "_part")
+SUBCOMMANDS = ("decompile", "analyse", "batch", "_part", "_stock")
 
 
 def _report_plan(plan, stream) -> None:
@@ -103,6 +103,14 @@ def cmd_part(args) -> int:
     return 0
 
 
+def cmd_stock(args) -> int:
+    """The silhouette stock search, run apart so the parent can put a clock on it."""
+    from .plan import silhouette_stock_from_file
+
+    silhouette_stock_from_file(args.shape, args.answer)
+    return 0
+
+
 def _run_isolated(step: Path, out_dir: Path, args) -> dict:
     """Run one part in a child process and read back what it wrote.
 
@@ -130,19 +138,44 @@ def _run_isolated(step: Path, out_dir: Path, args) -> dict:
     # the child dies, try once more without that pass. The plan then goes out with
     # its ops unchecked, which the script itself will show, and that is a great deal
     # better than no result at all for the part.
+    attempts = []
     for extra in ([], ["--no-verify"]):
-        done = subprocess.run(command + extra, capture_output=True, text=True, check=False)
+        try:
+            done = subprocess.run(
+                command + extra, capture_output=True, text=True, check=False,
+                timeout=args.part_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            # A part that never finishes is a result too, and without a limit it holds
+            # the whole corpus: one sheet-metal part once ran for three hours. It is
+            # not retried, since there is no reason to think a second run is quicker.
+            record = {
+                "file": step.name, "status": "timeout",
+                "error": f"no result within {args.part_timeout:.0f}s",
+            }
+            _keep(record, report)
+            return record
         if report.exists():
             record = json.loads(report.read_text())
             if extra:
                 record["unverified"] = "the kernel crashed while checking the ops"
             return record
+        tail = "\n".join(done.stderr.strip().splitlines()[-6:])
+        attempts.append(f"exit {done.returncode}{' without verification' if extra else ''}: {tail}")
         if done.returncode >= 0:
             break  # it failed without crashing, so running it again will not help
 
     reason = "the CAD kernel crashed" if done.returncode < 0 else "no report was written"
-    tail = "\n".join(done.stderr.strip().splitlines()[-4:])
-    return {"file": step.name, "status": "crashed", "error": f"{reason}: {tail}"[:800]}
+    # Keep what the child said. A crash that only happens under load cannot be
+    # reproduced afterwards, so this is the only evidence there will be.
+    record = {"file": step.name, "status": "crashed", "error": reason, "attempts": attempts}
+    _keep(record, report)
+    return record
+
+
+def _keep(record: dict, report: Path) -> None:
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(json.dumps(record, indent=2))
 
 
 def cmd_batch(args) -> int:
@@ -232,6 +265,8 @@ def build_parser() -> argparse.ArgumentParser:
     three.add_argument("--no-trim", action="store_true")
     three.add_argument("--jobs", type=int, default=max((os.cpu_count() or 4) // 2, 1),
                        help="parts to run at once (each already has its own process)")
+    three.add_argument("--part-timeout", type=float, default=1800.0,
+                       help="seconds one part may take before it is recorded as a timeout")
     three.set_defaults(func=cmd_batch)
 
     part = subparsers.add_parser("_part", help=argparse.SUPPRESS)
@@ -243,6 +278,11 @@ def build_parser() -> argparse.ArgumentParser:
     part.add_argument("--no-trim", action="store_true")
     part.add_argument("--no-verify", action="store_true")
     part.set_defaults(func=cmd_part)
+
+    stock = subparsers.add_parser("_stock", help=argparse.SUPPRESS)
+    stock.add_argument("shape")
+    stock.add_argument("answer")
+    stock.set_defaults(func=cmd_stock)
     return parser
 
 

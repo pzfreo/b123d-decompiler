@@ -8,6 +8,7 @@ one adapter rather than to "the pipeline".
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import itertools
 import math
@@ -268,7 +269,7 @@ STOCK_BUDGET = 240.0
 _AXIS_NAMES = ("x", "y", "z")
 
 
-def _fuse_columns(columns: list, deadline: float | None = None):
+def _fuse_columns(columns: list, deadline: float | None = None, size=None):
     """Fuse the slice columns into one billet, in pairs and cleaned.
 
     A chain of fuses re-sews everything built so far at every step, so the last few
@@ -281,11 +282,13 @@ def _fuse_columns(columns: list, deadline: float | None = None):
     puts a hole in the billet.
     """
 
+    measure = size or (lambda shape: shape.volume)
+
     def join(left, right):
         for attempt in (lambda: left.fuse(right).clean(), lambda: left.fuse(right)):
             try:
                 made = attempt()
-                if made is not None and made.volume > 0:
+                if made is not None and measure(made) > 0:
                     return made
             except Exception:  # noqa: BLE001 - a refused fuse is retried or deferred
                 continue
@@ -311,6 +314,28 @@ def _fuse_columns(columns: list, deadline: float | None = None):
         # Rotate the leftovers so a pair that would not join is not offered again.
         columns = merged + deferred[1:] + deferred[:1]
     return columns[0] if len(columns) == 1 else None
+
+
+def _glue(pieces: list):
+    """Join prisms that share faces but never overlap, in one call.
+
+    A flat union comes back as many faces sharing edges, so its prisms touch along
+    whole faces. That is the slowest input there is for an ordinary fuse, and one such
+    fuse ran for over ten minutes on a part with ten faces. The kernel's glue mode is
+    made for exactly this arrangement and treats it as bookkeeping.
+    """
+    try:
+        joined = pieces[0].fuse(*pieces[1:], glue=True)
+        with contextlib.suppress(Exception):  # an uncleaned billet is still a billet
+            joined = joined.clean()
+        # The prisms never overlap, so a sound result holds exactly their total volume.
+        # Glue can come back broken without saying so; this is how that shows.
+        expected = sum(float(piece.volume) for piece in pieces)
+        if not joined.solids() or abs(float(joined.volume) - expected) > 0.01 * expected:
+            return None
+        return joined
+    except Exception:  # noqa: BLE001 - fall back to the ordinary fuse
+        return None
 
 
 def _silhouette_solid(part: Part, index: int, ctx: Context, deadline: float | None = None):
@@ -350,6 +375,7 @@ def _silhouette_solid(part: Part, index: int, ctx: Context, deadline: float | No
     # Slice a copy. These booleans widen the tolerances of what they are given, and the
     # part is the reference every later measurement is taken against.
     scratch = copy.deepcopy(part)
+    floor = low - ctx.margin
     columns = []
     for start, finish in gaps:
         if deadline is not None and time.monotonic() > deadline:
@@ -375,19 +401,55 @@ def _silhouette_solid(part: Part, index: int, ctx: Context, deadline: float | No
             try:
                 # A hole in the section is still solid billet, so only the outer wire.
                 filled = make_face(face.outer_wire())
-                column = extrude(filled, amount=reach, dir=direction, both=True)
-            except Exception:  # noqa: BLE001 - a section that will not extrude is skipped
+                # Every column runs the same length in the same direction, so the union
+                # of the columns is one column of the union of their sections. Laying
+                # the sections on one plane and joining them flat is a 2D problem the
+                # kernel handles quickly and reliably; joining sixty overlapping solids
+                # once took three hours in a single call.
+                offset = [0.0, 0.0, 0.0]
+                offset[index] = floor - position
+                flat = Pos(*offset) * filled
+            except Exception:  # noqa: BLE001 - a section that will not build is skipped
                 continue
-            if column is not None and column.volume > 0:
-                columns.append(column)
+            if flat is not None and flat.area > 0:
+                columns.append(flat)
     if not columns:
-        return None
-    stock = _fuse_columns(columns, deadline)
-    if stock is None:
         return None
     size = tuple(ctx.bb_max[k] - ctx.bb_min[k] for k in range(3))
     centre = tuple((ctx.bb_max[k] + ctx.bb_min[k]) / 2 for k in range(3))
-    return stock & (Pos(*centre) * Box(*size))
+    envelope = Pos(*centre) * Box(*size)
+
+    def extruded(faces):
+        try:
+            return [extrude(face, amount=reach, dir=direction) for face in faces]
+        except Exception:  # noqa: BLE001 - a face that will not extrude spoils the set
+            return None
+
+    def flat_first():
+        # Join the sections flat, then extrude once and glue the prisms.
+        shadow = _fuse_columns(list(columns), deadline, size=lambda shape: shape.area)
+        pieces = extruded(shadow.faces()) if shadow is not None else None
+        if not pieces:
+            return None
+        return pieces[0] if len(pieces) == 1 else _glue(pieces)
+
+    def solid_first():
+        # The slower way that does not depend on the flat union: a prism per section,
+        # joined in 3D. Kept for the parts where the flat union comes back broken.
+        pieces = extruded(columns)
+        return _fuse_columns(pieces, deadline) if pieces else None
+
+    for build in (flat_first, solid_first):
+        try:
+            stock = build()
+            if stock is None:
+                continue
+            clipped = stock & envelope
+            if clipped.solids() and clipped.volume > 0:
+                return clipped
+        except Exception:  # noqa: BLE001 - try the other way before giving up
+            continue
+    return None
 
 
 def _best_silhouette_axis(ctx: Context) -> list[int]:
@@ -473,10 +535,15 @@ def _silhouette_stock(ctx: Context) -> tuple[str, list[str], float] | None:
             )
         except Exception:  # noqa: BLE001 - an axis that will not build is simply not used
             continue
-        if solid is None or solid.volume <= 0 or ctx.held_by(solid) < HOLDS:
+        # One axis failing must not cost the others: a shadow with a degenerate face
+        # once made a flatness test throw, and the whole search went with it.
+        try:
+            if solid is None or solid.volume <= 0 or ctx.held_by(solid) < HOLDS:
+                continue
+            if _prism_source(solid, index, ctx, "_shadow") is None:
+                continue  # a shadow this tool cannot draw is a shadow it cannot emit
+        except Exception:  # noqa: BLE001 - an axis that will not measure is not used
             continue
-        if _prism_source(solid, index, ctx, "_shadow") is None:
-            continue  # a shadow this tool cannot draw is a shadow it cannot emit
         built.append((index, solid))
     if not built:
         return None
@@ -529,6 +596,73 @@ def _silhouette_stock(ctx: Context) -> tuple[str, list[str], float] | None:
     return label, code, drawn.volume
 
 
+def _isolated_silhouette_stock(ctx: Context):
+    """The silhouette billet, searched for in a child process with a hard time limit.
+
+    The search is the one place where this tool hands the kernel shapes it built itself
+    and lets it grind on them: a single fuse of two slice columns once ran for three
+    hours on a sheet-metal part, and another took a process down outright. Neither
+    can be interrupted from inside, because the time goes in one call. In a child the
+    clock is enforced from outside, and whatever happens the part still gets a billet
+    from the candidates that remain.
+    """
+    import json
+    import subprocess
+    import sys
+    import tempfile
+    from pathlib import Path
+
+    from OCP.BRepTools import BRepTools
+
+    with tempfile.TemporaryDirectory() as folder:
+        shape_path, answer_path = Path(folder) / "part.brep", Path(folder) / "stock.json"
+        BRepTools.Write_s(ctx.part.wrapped, str(shape_path))
+        command = [
+            sys.executable, "-m", "b123d_decompiler.cli", "_stock",
+            str(shape_path), str(answer_path),
+        ]
+        try:
+            subprocess.run(
+                command, capture_output=True, check=False, timeout=STOCK_BUDGET + 60.0
+            )
+        except subprocess.TimeoutExpired:
+            return None
+        if not answer_path.exists():
+            return None
+        answer = json.loads(answer_path.read_text())
+    if answer is None:
+        return None
+    return answer["label"], answer["code"], answer["volume"]
+
+
+def silhouette_stock_from_file(shape_path: str, answer_path: str) -> None:
+    """The child's half of the above: read the part, search, write what it found."""
+    import json
+    from pathlib import Path
+
+    from build123d import Compound, Solid
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopoDS import TopoDS, TopoDS_Shape
+
+    shape = TopoDS_Shape()
+    BRepTools.Read_s(shape, shape_path, BRep_Builder())
+    # Downcast before wrapping: a raw shape handed to Part measures as nothing.
+    if shape.ShapeType() == TopAbs_SOLID:
+        part = Solid(TopoDS.Solid_s(shape))
+    else:
+        part = Compound(TopoDS.Compound_s(shape))
+    try:
+        found = _silhouette_stock(Context(part))
+    except Exception:  # noqa: BLE001 - no billet is an answer, the parent falls back
+        found = None
+    answer = None if found is None else {
+        "label": found[0], "code": list(found[1]), "volume": float(found[2]),
+    }
+    Path(answer_path).write_text(json.dumps(answer))
+
+
 def stock_source(ctx: Context, document: dict) -> tuple[str, list[str]]:
     """The solid the part is cut from.
 
@@ -547,10 +681,7 @@ def stock_source(ctx: Context, document: dict) -> tuple[str, list[str]]:
         if turned is not None:
             candidates.append((run_source(turned[1], "part").volume, turned))
             break
-    try:
-        outline = _silhouette_stock(ctx)
-    except Exception:  # noqa: BLE001 - the envelope is always available
-        outline = None
+    outline = _isolated_silhouette_stock(ctx)
     if outline is not None:
         candidates.append((outline[2], (outline[0], outline[1])))
     if candidates:
@@ -673,6 +804,12 @@ def _reject_destructive(plan: BuildPlan, tools: dict[int, Part], stock: Part) ->
             candidate = part - tool if op.kind == "cut" else part + tool
             if not candidate.solids() or candidate.volume <= 0.0:
                 raise ValueError("the part would be left empty")
+            # A boolean can succeed, keep the volume and still leave a solid the kernel
+            # calls invalid, typically a cut whose face lands on one of the part's own.
+            # Every op after it inherits the damage, and STEP export silently drops an
+            # invalid solid, so the script runs clean and the rebuild comes out empty.
+            if not is_sound(candidate):
+                raise ValueError("the part would be left malformed")
             # A cut cannot take away more than its own tool, and a fuse cannot add
             # more. When the kernel says otherwise the boolean has come apart, and
             # the sequence has to go on without it.
@@ -792,6 +929,11 @@ def build_plan(
         if adapter is None:
             if family not in EVIDENCE_ONLY:
                 plan.skipped[family] = plan.skipped.get(family, 0) + 1
+            # A record with nothing to build still marks its faces as claimed, and the
+            # trimmer only reads faces nobody claimed. A riser is exactly the wall of a
+            # slot or a step that no other record describes, so its faces are handed on
+            # to the trimmer rather than left out of both.
+            refused.update(feature.get("constituent_faces") or ())
             continue
         op = adapter(feature, ctx)
         if op is None:
