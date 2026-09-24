@@ -76,11 +76,17 @@ Quiddity publishes no base-body record, so the solid the part is cut from has to
 Three candidates, and whichever is smallest while still holding the whole part wins.
 
 **The part's own outline.** Most machined parts are cut from plate or bar, so their silhouette
-along some axis *is* the billet. It is built by slicing where the geometry changes, taking both
-ends of every slice, and running each cross section the full length of the axis; a slab's
+along some axis *is* the billet. It is built by slicing where the geometry changes, taking the
+cross section in every slice, and running each one the full length of the axis; a slab's
 section cannot change between two consecutive vertex positions on a prismatic part, so that is
-exact there. The axis is chosen by rasterising the part's mesh, which costs a fraction of a
-second, before the exact billet is built for that one axis.
+exact there, and long slices are split so a taper loses little.
+
+A part that is a plate with something formed into it has a shadow far bigger than itself along
+every axis, because the formed region smears the whole length of the sweep. So the shadows
+along all three axes are built and intersected, keeping an axis only if it takes away at least
+2 %. Each shadow holds the part, so the intersection does too. The emitted source is run and
+checked again, because curves written out as chords can fall inside the part. The search gives
+up after 90 seconds an axis and four minutes in all.
 
 **Bar turned to a stepped diameter**, from a turned profile, which is the one quiddity family
 that describes a whole billet rather than a region of the body.
@@ -219,20 +225,23 @@ there is a real regression in an adapter.
 
 ## Where it stands
 
-| | mfcadpp (40) | holdout (33) | rotational (5) | realistic (28) |
-|---|---|---|---|---|
-| IoU median | 0.988 | 0.988 | 0.939 | 0.576 |
-| parts at IoU 0.9 or above | 35 | 26 | 4 | 5 |
-| missing material, mean | 0.16 % | 0.07 % | 0.09 % | 0.36 % |
-| extra material, mean | 4.2 % | 13.8 % | 4.9 % | 196 % |
+Measured on 24 September 2026 against quiddity 0.3.3.
 
-The third column is the five rotational parts from Gramel and CADGenBench, kept as their own
-baseline because they exercise the turned billet and the swept chamfers that nothing in
-MFCAD++ touches. The wider realistic corpus is in `RESULTS.md` and has not been re-measured
-since this work.
+| | mfcadpp (40) | holdout (33) | rotational (5) | realistic (28) | CADGenBench edit, working half (16) |
+|---|---|---|---|---|---|
+| IoU median | 0.997 | 1.000 | 0.964 | 0.818 | 0.416 |
+| parts at IoU 0.9 or above | 37 | 29 | 3 | 10 | 2 |
+| missing material, mean | 0.16 % | 0.05 % | 0.12 % | 1.12 % | 0.63 % |
+| extra material, mean | 3.4 % | 9.1 % | 4.7 % | 149 % | 782 % |
+| did not score | 0 | 0 | 1 | 4 | 2 |
 
 The first two are MFCAD++ benchmark blocks; adapters were developed against the first and
 never run against the second until they were finished, and the close medians say they
-generalise. The third is 28 parts from NIST, build123d's Too Tall Toby set, CADGenBench and
-Gramel, and it is where the tool falls down: real parts are thin, rounded and mostly made of
-faces the recogniser cannot name. Full numbers and the reasons in `RESULTS.md`.
+generalise. The rotational five from Gramel and CADGenBench exercise the turned billet and the
+swept chamfers that nothing in MFCAD++ touches. The realistic set is 28 parts from NIST,
+build123d's Too Tall Toby set, CADGenBench and Gramel.
+
+The last column is where the tool falls down. It is half of the CADGenBench editing corpus,
+held back as a target of IoU 0.9 for every part, with the other half kept unseen. Most of those
+parts are shapes no axis-aligned shadow comes close to, and the error is almost all material
+left behind rather than lost. Full numbers and the reasons in `RESULTS.md`.
