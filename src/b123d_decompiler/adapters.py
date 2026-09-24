@@ -172,22 +172,18 @@ def _best_closure(boundary, closure, geometry, origin, run, u_dir, low, high, ct
     return choice
 
 
-def _open_end_reach(boundary, closure, side, origin, run, u_dir, at, sign, most, ctx) -> float:
-    """How far past an open end the recess can run before it meets material again.
+def _empty_reach(piece_code, most: float, ctx: Context) -> float:
+    """How far a tool can be carried on past the end of its feature through empty space.
 
-    "Open" says there is space just beyond the end, not that the space goes on to the
-    outside of the part. A short channel can open into a pocket or a step, and running
-    it on to the envelope carries it straight through whatever lies past that. So the
-    profile is swept beyond the end and the farthest length that stays empty in the
-    reference is kept, found by halving.
+    `piece_code(length)` is the source for just the extension, that many units long.
+    The whole of it is tried first, since that is the common case, and failing that
+    the farthest length that stays empty in the reference is found by halving.
     """
     from .geom import overlap_after_restore
 
     def clean(length: float) -> bool:
-        start = at if sign > 0 else at - length
-        base = tuple(origin[k] + run[k] * start for k in range(3))
         try:
-            tool = run_source(_recess_code(boundary, closure, 0.0, base, u_dir, run, length, side))
+            tool = run_source(piece_code(length))
             volume = float(tool.volume)
             if volume <= 0:
                 return False
@@ -195,8 +191,10 @@ def _open_end_reach(boundary, closure, side, origin, run, u_dir, at, sign, most,
         except Exception:  # noqa: BLE001 - an extension that will not build is not taken
             return False
 
-    if most <= 0 or clean(most):
-        return max(most, 0.0)
+    if most <= 0:
+        return 0.0
+    if clean(most):
+        return most
     near, far = 0.0, most
     for _ in range(8):
         middle = (near + far) / 2
@@ -205,6 +203,22 @@ def _open_end_reach(boundary, closure, side, origin, run, u_dir, at, sign, most,
         else:
             far = middle
     return near
+
+
+def _open_end_reach(boundary, closure, side, origin, run, u_dir, at, sign, most, ctx) -> float:
+    """How far past an open end the recess can run before it meets material again.
+
+    "Open" says there is space just beyond the end, not that the space goes on to the
+    outside of the part. A short channel can open into a pocket or a step, and running
+    it on to the envelope carries it straight through whatever lies past that.
+    """
+
+    def piece(length: float) -> list[str]:
+        start = at if sign > 0 else at - length
+        base = tuple(origin[k] + run[k] * start for k in range(3))
+        return _recess_code(boundary, closure, 0.0, base, u_dir, run, length, side)
+
+    return _empty_reach(piece, most, ctx)
 
 
 #: An open end's extension may touch this share of its own volume in material and
@@ -296,11 +310,35 @@ def hole(feature: dict, ctx: Context) -> Op | None:
     notes = []
 
     if bottom == "through":
-        # Direction only has to be right for the features at the opening: run the bore
-        # clear past the envelope at both ends and it cannot stop short.
-        _, high = ctx.extent_along(axis)
-        offset = -ctx.margin
-        length = high - dot(location, axis) + 2 * ctx.margin
+        # "Through" is through the wall the hole is drilled in, which the depth gives,
+        # not through the whole part: a bolt hole in a flange runs straight on into
+        # whatever lies behind the flange. Carry the bore on past each end only as far
+        # as the space stays empty, which on a plain plate is the envelope anyway.
+        low_extent, high_extent = ctx.extent_along(axis)
+        start = dot(location, axis)
+        radius = diameter / 2
+
+        def piece(origin, direction):
+            def code(length: float) -> list[str]:
+                return [
+                    f"_plane = Plane(origin={fmt_tuple(origin)}, z_dir={fmt_tuple(direction)})",
+                    (
+                        f"tool = _plane * Cylinder({fmt(radius)}, {fmt(length)}, "
+                        f"align=(Align.CENTER, Align.CENTER, Align.MIN))"
+                    ),
+                ]
+
+            return code
+
+        exit_point = tuple(location[k] + axis[k] * depth for k in range(3))
+        before = _empty_reach(
+            piece(location, _negate(axis)), start - low_extent + ctx.margin, ctx
+        )
+        after = _empty_reach(
+            piece(exit_point, axis), high_extent - (start + depth) + ctx.margin, ctx
+        )
+        offset = -before
+        length = before + depth + after
     else:
         forward = ctx.void_score(location, axis, depth, diameter / 2)
         backward = ctx.void_score(location, _negate(axis), depth, diameter / 2)
