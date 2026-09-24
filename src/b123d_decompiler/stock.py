@@ -331,9 +331,6 @@ SHADOW_GAIN = 0.98
 AXIS_BUDGET = 90.0
 STOCK_BUDGET = 240.0
 
-_AXIS_NAMES = ("x", "y", "z")
-
-
 def _fuse_columns(columns: list, deadline: float | None = None, size=None):
     """Fuse the slice columns into one billet, in pairs and cleaned.
 

@@ -303,19 +303,6 @@ def _plain_common(a, b, fuzzy: float = 0.0):
     return builder.Shape() if builder.IsDone() else None
 
 
-def common_part(a: Part, b: Part) -> Part | None:
-    """The intersection of two solids as a Part, leaving both exactly as they were."""
-    shape = _plain_common(a.wrapped, b.wrapped)
-    if shape is None or shape.IsNull():
-        return None
-    return Part(shape)
-
-
-#: An intersection smaller than this share of the cut tool is about to let the tool
-#: pass as empty, so it is the point at which the reading has to be checked by hand.
-SUSPECT_SHARE = 0.05
-
-
 def robust_common(a, b) -> tuple[object | None, str]:
     """Intersect two raw shapes, and say so when the answer could not be trusted.
 
@@ -380,26 +367,6 @@ def shared_material(tool: Part, other: Part, reference: Part) -> tuple[float, fl
         return volume, material_volume(as_shape(shared), reference)
     except Exception:  # noqa: BLE001 - an unreadable overlap is treated as all material
         return volume, volume
-
-
-_CLASSIFIERS: dict = {}
-
-
-def _context_for(shape: Part) -> Context:
-    """One classifier per shape, reused across calls.
-
-    The reference part is measured against hundreds of trims in a row, and building a
-    fresh classifier for it every time throws away everything the last one learned.
-    The shape is kept alongside so its id cannot be reused while the entry stands.
-    """
-    key = id(shape)
-    entry = _CLASSIFIERS.get(key)
-    if entry is None or entry[0] is not shape:
-        if len(_CLASSIFIERS) > 64:
-            _CLASSIFIERS.clear()
-        entry = (shape, Context(shape))
-        _CLASSIFIERS[key] = entry
-    return entry[1]
 
 
 _MESHES: dict = {}
@@ -488,6 +455,3 @@ def material_volume(tool: Part, reference: Part, restorers=()) -> float:
     return sampled_overlap_volume(tool, reference, list(restorers))
 
 
-def overlap_after_restore(tool: Part, reference: Part, restorers) -> float:
-    """Kept for callers of the old name; see material_volume."""
-    return material_volume(tool, reference, restorers)

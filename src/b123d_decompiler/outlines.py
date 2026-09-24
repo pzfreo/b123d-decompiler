@@ -233,12 +233,3 @@ def choose(candidates: list[Outline], low, high, gain: float, most_extrusions: i
         if score < best_score:
             best, best_score = chosen, score
     return best or []
-
-
-def estimate_volume(outline_set: list[Outline], low, high, points: int = 40000) -> float:
-    low, high = np.asarray(low), np.asarray(high)
-    places = np.random.default_rng(20260924).uniform(low, high, size=(points, 3))
-    inside = np.ones(points, dtype=bool)
-    for outline in outline_set:
-        inside &= outline.contains(places)
-    return float(inside.sum()) / points * math.prod(high - low)
