@@ -1670,7 +1670,10 @@ def _bore_trim(face, ctx: Context, index: int) -> Op | None:
     towards = unit(
         tuple(anchor[k] - (centre.X, centre.Y, centre.Z)[k] for k in range(3))
     )
-    inside = tuple((centre.X, centre.Y, centre.Z)[k] + towards[k] * radius * 0.5 for k in range(3))
+    # Probe just in front of the wall. Halfway to the axis can land in open space on
+    # the far side of a boss's material, and then a boss is taken for a bore.
+    step = min(radius * 0.05, max(ctx.diagonal * 1e-3, 0.2))
+    inside = tuple((centre.X, centre.Y, centre.Z)[k] + towards[k] * step for k in range(3))
     if ctx.inside_solid(inside):
         return None
 
@@ -1683,43 +1686,116 @@ def _bore_trim(face, ctx: Context, index: int) -> Op | None:
 
     u_low, u_high, v_low, v_high = BRepTools.UVBounds_s(face.wrapped)
     position = cylinder.Position()
-    x_axis = position.XDirection()
+    x_axis, y_axis = position.XDirection(), position.YDirection()
     across = (x_axis.X(), x_axis.Y(), x_axis.Z())
+    sideways = (y_axis.X(), y_axis.Y(), y_axis.Z())
     base = tuple(anchor[k] + along[k] * (v_low - 1e-3) for k in range(3))
     length = (v_high - v_low) + 2e-3
     label = f"clear an unrecognised bore \u00d8{fmt(2 * radius, 3)}"
+    whole = u_high - u_low >= 2 * math.pi - 1e-6
+    if whole:
+        u_low, u_high = 0.0, 2 * math.pi
+    # The space in front of a large wall often ends long before the axis, at a hub or
+    # a wall on the far side, so the slice stops at the deepest radius that is empty.
+    inner = _empty_inner_radius(
+        anchor, along, across, sideways, radius, (u_low, u_high), (v_low, v_high), ctx
+    )
+    plane = (
+        f"_bore = Plane(origin={fmt_tuple(base)}, x_dir={fmt_tuple(across)}, "
+        f"z_dir={fmt_tuple(along)})"
+    )
+    if inner is None:
+        return None
+    if inner > 0:
+        label += f" down to \u00d8{fmt(2 * inner, 3)}"
 
-    if u_high - u_low >= 2 * math.pi - 1e-6:
+    if whole:
         code = [
-            (
-                f"_bore = Plane(origin={fmt_tuple(base)}, x_dir={fmt_tuple(across)}, "
-                f"z_dir={fmt_tuple(along)})"
-            ),
+            plane,
             (
                 f"tool = _bore * Cylinder({fmt(radius)}, {fmt(length)}, "
                 f"align=(Align.CENTER, Align.CENTER, Align.MIN))"
             ),
         ]
+        if inner > 0:
+            code.append(
+                f"tool -= _bore * Cylinder({fmt(inner)}, {fmt(length)}, "
+                f"align=(Align.CENTER, Align.CENTER, Align.MIN))"
+            )
     else:
 
-        def rim(angle):
-            return (radius * math.cos(angle), radius * math.sin(angle))
+        def rim(size, angle):
+            return (size * math.cos(angle), size * math.sin(angle))
 
-        first, middle, last = rim(u_low), rim((u_low + u_high) / 2), rim(u_high)
+        middle = (u_low + u_high) / 2
+        first, centre, last = rim(radius, u_low), rim(radius, middle), rim(radius, u_high)
         label += f", {fmt(math.degrees(u_high - u_low), 3)}\u00b0 of it"
-        code = [
-            (
-                f"_bore = Plane(origin={fmt_tuple(base)}, x_dir={fmt_tuple(across)}, "
-                f"z_dir={fmt_tuple(along)})"
-            ),
-            (
+        if inner > 0:
+            near_last, near_centre, near_first = (
+                rim(inner, u_high), rim(inner, middle), rim(inner, u_low)
+            )
+            profile = (
+                f"_prof = ThreePointArc({fmt_tuple(first)}, {fmt_tuple(centre)}, "
+                f"{fmt_tuple(last)}) + Line({fmt_tuple(last)}, {fmt_tuple(near_last)}) + "
+                f"ThreePointArc({fmt_tuple(near_last)}, {fmt_tuple(near_centre)}, "
+                f"{fmt_tuple(near_first)}) + Line({fmt_tuple(near_first)}, {fmt_tuple(first)})"
+            )
+        else:
+            profile = (
                 f"_prof = Line((0, 0), {fmt_tuple(first)}) + ThreePointArc("
-                f"{fmt_tuple(first)}, {fmt_tuple(middle)}, {fmt_tuple(last)}) + "
+                f"{fmt_tuple(first)}, {fmt_tuple(centre)}, {fmt_tuple(last)}) + "
                 f"Line({fmt_tuple(last)}, (0, 0))"
-            ),
-            f"tool = extrude(_bore * make_face(_prof), amount={fmt(length)})",
-        ]
+            )
+        code = [plane, profile, f"tool = extrude(_bore * make_face(_prof), amount={fmt(length)})"]
     return Op("cut", "unclaimed_faces", index, label, code, speculative=True)
+
+
+#: Radii tried, as fractions of the bore's own, when finding how deep a bore trim can go.
+_BORE_STOPS = 40
+
+
+def _empty_inner_radius(anchor, along, across, sideways, radius, arc, run, ctx: Context):
+    """How far in from a bore wall the space stays empty, as the radius a trim can stop at.
+
+    Points are spread evenly through the pie slice between the wall and the axis and
+    classified against the mesh. Working inwards from the wall, the trim may go as deep
+    as it stays within both limits verification applies, the share of the trim that is
+    material and the share of the part. 0 means the whole slice to the axis is clear;
+    None means not even a thin skin in front of the wall is.
+    """
+    import numpy as np
+
+    from .geom import _mesh_for
+
+    rng = np.random.default_rng(0)
+    count = 4000
+    # Uniform by volume: the radius goes as the square root of a uniform draw.
+    sizes = radius * np.sqrt(rng.uniform(0.0, 1.0, count))
+    angles = rng.uniform(arc[0], arc[1], count)
+    heights = rng.uniform(run[0], run[1], count)
+    origin, along, across, sideways = (np.asarray(v, dtype=float) for v in (anchor, along, across, sideways))
+    points = (
+        origin
+        + heights[:, None] * along
+        + (sizes * np.cos(angles))[:, None] * across
+        + (sizes * np.sin(angles))[:, None] * sideways
+    )
+    solid = _mesh_for(ctx.part).contains(points)
+    slice_volume = 0.5 * (arc[1] - arc[0]) * radius**2 * (run[1] - run[0])
+    allowance = _TRIM_PART_SHARE * float(ctx.part.volume)
+    best = None
+    for step in range(1, _BORE_STOPS + 1):
+        stop = radius * (1.0 - step / _BORE_STOPS)
+        within = sizes >= stop
+        if not within.any():
+            continue
+        share = float(solid[within].mean())
+        volume = slice_volume * (1.0 - (stop / radius) ** 2)
+        if share <= _TRIM_TOLERANCE and share * volume <= allowance:
+            best = stop
+    if best is None:
+        return None
+    return 0.0 if best < radius * 1e-6 else best
 
 
 def face_profile_source(face, outward, variable: str = "_prof") -> tuple[list[str], tuple] | None:
