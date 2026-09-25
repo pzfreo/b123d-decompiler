@@ -137,8 +137,9 @@ def test_a_boss_is_accounted_for_once_the_stock_is_the_parts_outline(tmp_path):
     """
     plan, _source, report = run(boss, "boss", tmp_path)
     assert [op.family for op in plan.ops if not op.speculative] == ["bosses"]
-    assert plan.ops[0].kind == "fuse"
-    assert plan.ops[0].status in (model.OK, model.INERT)
+    boss_op = next(op for op in plan.ops if op.family == "bosses")
+    assert boss_op.kind == "fuse"
+    assert boss_op.status in (model.OK, model.INERT)
     assert "outline" in plan.stock_label
     assert report["iou"] > 0.98, f"IoU {report['iou']:.4f}"
     assert report["missing_pct"] < 0.5

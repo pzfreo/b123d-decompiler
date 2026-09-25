@@ -1533,7 +1533,57 @@ _TRIM_TOLERANCE = 0.02
 #: How many unclaimed faces are worth trying on one part, largest first. This covers all
 #: but the most involved parts outright, and beyond it the returns are small while each
 #: candidate still costs several booleans to place.
-TRIM_BUDGET = 150
+TRIM_BUDGET = 600
+
+
+def _ray_depth(segments, origin, first, second, outward, most: float, ctx: Context):
+    """How far the space in front of a flat face runs, by casting rays at the mesh.
+
+    Points are spread over the face and a ray goes out from each along the face's
+    normal; the space is clear as far as the nearest thing any ray meets. That needs
+    no kernel at all, where finding the same depth by building prisms took several
+    booleans a face and limited how many faces could be tried. Only faces that look
+    along x, y or z are measured this way; the rest return None and are measured
+    the old way. Each trim is still checked against the part afterwards.
+    """
+    import numpy as np
+    import shapely
+
+    from .geom import _mesh_for
+
+    axis = max(range(3), key=lambda k: abs(outward[k]))
+    if abs(outward[axis]) < 0.9999:
+        return None
+    corners = [segment[1] for segment in segments]
+    if len(corners) < 3:
+        return None
+    outline = shapely.Polygon(corners)
+    if not outline.is_valid or outline.area <= 0:
+        outline = outline.buffer(0)
+        if outline.is_empty:
+            return None
+    # Pull the samples in from the edges, so a ray does not graze the next wall.
+    inner = outline.buffer(-min(0.05 * math.sqrt(outline.area), ctx.diagonal * 1e-3))
+    region = inner if not inner.is_empty else outline
+    low_u, low_v, high_u, high_v = region.bounds
+    spacing = max(math.sqrt(region.area) / 14, ctx.diagonal * 1e-3)
+    us = np.arange(low_u + spacing / 2, high_u, spacing)
+    vs = np.arange(low_v + spacing / 2, high_v, spacing)
+    grid = np.array([(u, v) for u in us for v in vs]) if len(us) and len(vs) else np.empty((0, 2))
+    if len(grid):
+        grid = grid[shapely.contains_xy(region, grid[:, 0], grid[:, 1])]
+    edge = np.asarray(region.exterior.coords) if hasattr(region, "exterior") else np.empty((0, 2))
+    flat = np.concatenate([grid, edge]) if len(grid) else edge
+    if not len(flat):
+        return None
+    lift = ctx.diagonal * 1e-5
+    places = np.asarray(origin)[None, :] + flat[:, :1] * np.asarray(first)[None, :] \
+        + flat[:, 1:2] * np.asarray(second)[None, :] + lift * np.asarray(outward)[None, :]
+    distance = _mesh_for(ctx.part).first_hit(places, axis, 1.0 if outward[axis] > 0 else -1.0)
+    depth = float(min(distance.min(), most))
+    # Zero, not None, when the space is blocked straight away: the rays have answered,
+    # and asking again by building prisms only finds the same nothing, slowly.
+    return depth if depth > ctx.diagonal * 1e-4 else 0.0
 
 
 def _deepest_empty(build, reach: float, ctx: Context) -> float | None:
@@ -1780,8 +1830,10 @@ def propose_face_trims(
                 f"tool = extrude(_face * make_face(_prof), amount={fmt(depth)})",
             ]
 
-        depth = _deepest_empty(build, reach + ctx.margin, ctx)
+        depth = _ray_depth(segments, origin, first, second, outward, reach + ctx.margin, ctx)
         if depth is None:
+            depth = _deepest_empty(build, reach + ctx.margin, ctx)
+        if not depth:
             passed_over += 1  # nothing in front of this face is provably empty
             continue
         code = build(depth)

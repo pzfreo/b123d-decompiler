@@ -132,3 +132,41 @@ class MeshInside:
         points = np.asarray(points, dtype=float).reshape(-1, 3)
         votes = sum((self._crossings(points, axis) % 2 == 1).astype(int) for axis in range(3))
         return votes >= 2
+
+    def first_hit(self, points, axis: int, sign: float) -> np.ndarray:
+        """Distance from each point along an axis, one way, to the first surface met.
+
+        Infinity where nothing is met. Used to find how far the space in front of a
+        face runs before it reaches the part again, without building anything.
+        """
+        points = np.asarray(points, dtype=float).reshape(-1, 3)
+        first, second, low, span, members = self.axes[axis]
+        found = np.full(len(points), np.inf)
+        cell = np.floor((points[:, [first, second]] - low) / span * GRID).astype(int)
+        inside_grid = np.all((cell >= 0) & (cell < GRID), axis=1)
+        keys = cell[:, 0] * GRID + cell[:, 1]
+        for key in np.unique(keys[inside_grid]):
+            chosen = np.nonzero(inside_grid & (keys == key))[0]
+            candidates = members.get((int(key) // GRID, int(key) % GRID))
+            if candidates is None:
+                continue
+            tri = self.triangles[candidates]
+            a, b, c = tri[:, 0], tri[:, 1], tri[:, 2]
+            p = points[chosen]
+            pu, pv = p[:, None, first], p[:, None, second]
+            au, av = a[None, :, first], a[None, :, second]
+            bu, bv = b[None, :, first], b[None, :, second]
+            cu, cv = c[None, :, first], c[None, :, second]
+            det = (bv - cv) * (au - cu) + (cu - bu) * (av - cv)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                w1 = ((bv - cv) * (pu - cu) + (cu - bu) * (pv - cv)) / det
+                w2 = ((cv - av) * (pu - cu) + (au - cu) * (pv - cv)) / det
+                w3 = 1.0 - w1 - w2
+                hit = (det != 0) & (w1 >= 0) & (w2 >= 0) & (w3 >= 0)
+                height = (
+                    w1 * a[None, :, axis] + w2 * b[None, :, axis] + w3 * c[None, :, axis]
+                )
+                distance = (height - p[:, None, axis]) * sign
+                distance = np.where(hit & (distance > 0), distance, np.inf)
+            found[chosen] = distance.min(axis=1)
+        return found
