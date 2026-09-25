@@ -130,14 +130,17 @@ class Context:
         cache = self.__dict__.setdefault("_inside_cache", {})
         if points not in cache:
             generator = random.Random(20260921)
-            found = []
-            for _ in range(points):
-                spot = tuple(
-                    generator.uniform(self.bb_min[k], self.bb_max[k]) for k in range(3)
-                )
-                if self.inside_solid(spot):
-                    found.append(spot)
-            cache[points] = found
+            spots = [
+                tuple(generator.uniform(self.bb_min[k], self.bb_max[k]) for k in range(3))
+                for _ in range(points)
+            ]
+            # Asked of the part's mesh, all at once. On a part that is mostly spline the
+            # exact classifier took minutes over these points, and the stock search ran
+            # out of time before it built a single billet. The mesh can misplace a point
+            # only within its tolerance of the surface, and every billet is grown past
+            # the surface, so a billet holds such a point either way.
+            inside = _mesh_for(self.part).contains(spots)
+            cache[points] = [spot for spot, solid in zip(spots, inside, strict=True) if solid]
         return cache[points]
 
     def corners(self):
