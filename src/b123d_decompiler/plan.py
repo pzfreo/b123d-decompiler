@@ -34,6 +34,13 @@ OVERLAP_LIMIT = 0.02
 #: passes the relative test while cutting away a real piece of the part.
 PART_LIMIT = 0.002
 
+#: The same limits for a stock that is already the part, such as a folded sheet built
+#: from its flanges and bends. A billet has material to spare and a cut that grazes the
+#: part by a little is how it is carved; an exact stock has none, so any real material
+#: a cut takes is damage.
+EXACT_OVERLAP_LIMIT = 0.005
+EXACT_PART_LIMIT = 1e-4
+
 #: Everything the speculative trims eat between them, together. Each one can sit just
 #: inside the per-op limit and still ruin a part when forty of them do it at once, so
 #: the cheapest are taken first and the rest are dropped once the budget is gone.
@@ -213,10 +220,18 @@ def _verify(plan: BuildPlan, ctx: Context, overlaps: dict | None = None):
     stock = run_source(plan.stock_code, "part")
     tools = _build_tools(plan.ops)
     cut_tools = [tools[i] for i, op in enumerate(plan.ops) if op.kind == "cut" and i in tools]
+    exact = _is_exact_stock(plan.stock_label)
+    overlap_limit, part_limit = (
+        (EXACT_OVERLAP_LIMIT, EXACT_PART_LIMIT) if exact else (OVERLAP_LIMIT, PART_LIMIT)
+    )
 
     for position, op in enumerate(plan.ops):
         tool = tools.get(position)
         if tool is not None and op.status == model.PLANNED and op.kind == "fuse":
+            if exact:
+                op.status = model.INERT
+                op.note = "; ".join(filter(None, [op.note, "the stock already holds this material"]))
+                continue
             _classify_fuse(op, tool, ctx, stock, cut_tools)
 
     restoring = tuple(
@@ -235,8 +250,8 @@ def _verify(plan: BuildPlan, ctx: Context, overlaps: dict | None = None):
             overlaps[key] = round(material_volume(tool, ctx.part, restorers), 6)
         op.overlap = overlaps[key]
         if (
-            op.overlap / op.volume > OVERLAP_LIMIT
-            or op.overlap > PART_LIMIT * ctx.part.volume
+            op.overlap / op.volume > overlap_limit
+            or op.overlap > part_limit * ctx.part.volume
         ):
             share = (
                 f"cuts {op.overlap:.3g} mm\u00b3 "
@@ -252,6 +267,11 @@ def _verify(plan: BuildPlan, ctx: Context, overlaps: dict | None = None):
 
     _spend_trim_budget(plan, ctx)
     return _reject_destructive(plan, tools, stock)
+
+
+def _is_exact_stock(label: str) -> bool:
+    """Whether a stock is the part itself rather than a billet to carve."""
+    return label.startswith("stock: sheet metal")
 
 
 def _cylinder_catalogue(document: dict):
@@ -419,7 +439,7 @@ def build_plan(
     else:
         _accept_unverified(plan)
     # A folded sheet built from quiddity's sheet-metal record is that record modelled.
-    if plan.stock_label.startswith("stock: sheet metal"):
+    if _is_exact_stock(plan.stock_label):
         plan.skipped.pop("sheet_metal_bodies", None)
     trial_seconds = [trial.get("seconds") or 0.0 for trial in plan.stock_trials]
     plan.timings = {

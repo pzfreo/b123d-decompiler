@@ -1798,11 +1798,14 @@ def _empty_inner_radius(anchor, along, across, sideways, radius, arc, run, ctx: 
     return 0.0 if best < radius * 1e-6 else best
 
 
-def face_profile_source(face, outward, variable: str = "_prof") -> tuple[list[str], tuple] | None:
+def face_profile_source(
+    face, outward, variable: str = "_prof", places: int = 4
+) -> tuple[list[str], tuple] | None:
     """Source for a planar face's outer boundary, drawn in its own plane.
 
     Shared by stock and by the trims, because both need the same thing: a flat face
-    written out as a profile that build123d can make a face from and extrude.
+    written out as a profile that build123d can make a face from and extrude. Pieces
+    that must meet exactly, such as a sheet's flanges and bends, ask for more places.
     """
     chain = _ordered_edges(face)
     if chain is None:
@@ -1825,19 +1828,19 @@ def face_profile_source(face, outward, variable: str = "_prof") -> tuple[list[st
     drawn = []
     for segment in segments:
         if segment[0] == "line":
-            drawn.append(f"Line({fmt_tuple(segment[1])}, {fmt_tuple(segment[2])})")
+            drawn.append(f"Line({fmt_tuple(segment[1], places)}, {fmt_tuple(segment[2], places)})")
         else:
             drawn.append(
-                f"SagittaArc({fmt_tuple(segment[1])}, {fmt_tuple(segment[2])}, "
-                f"{fmt(segment[3])})"
+                f"SagittaArc({fmt_tuple(segment[1], places)}, {fmt_tuple(segment[2], places)}, "
+                f"{fmt(segment[3], places)})"
             )
     joined = "\n    + ".join(drawn)
     return (
         [
             f"{variable} = (\n    {joined}\n)",
             (
-                f"_plane = Plane(origin={fmt_tuple(origin)}, x_dir={fmt_tuple(first)}, "
-                f"z_dir={fmt_tuple(outward)})"
+                f"_plane = Plane(origin={fmt_tuple(origin, places)}, x_dir={fmt_tuple(first, places)}, "
+                f"z_dir={fmt_tuple(outward, places)})"
             ),
         ],
         origin,
