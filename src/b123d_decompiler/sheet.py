@@ -81,6 +81,9 @@ def sheet_metal_stock(document: dict, ctx: Context) -> tuple[str, list[str]] | N
         if found:
             code.append(f"# formed feature {number}")
             code += found
+    code = _joinable(code)
+    if code is None:
+        return None
     code += _join_source()
     bends = len(record.get("bends") or ())
     label = (
@@ -171,6 +174,22 @@ def _bend_source(first, second) -> list[str] | None:
     across = cylinder.Position().XDirection().Coord()
     u_low, u_high, v_low, v_high = BRepTools.UVBounds_s(first.wrapped)
     base = tuple(axis.Location().Coord()[k] + along[k] * v_low for k in range(3))
+    plane = (
+        f"_bend = Plane(origin={fmt_tuple(base, PLACES)}, x_dir={fmt_tuple(across, PLACES)}, "
+        f"z_dir={fmt_tuple(along, PLACES)})"
+    )
+    if u_high - u_low >= 2 * math.pi - 1e-6:
+        # A whole turn is a tube: its arc would start and end at the same point.
+        length = fmt(v_high - v_low, PLACES)
+        return [
+            plane,
+            (
+                f"_pieces.append(_bend * (Cylinder({fmt(outer, PLACES)}, {length}, "
+                "align=(Align.CENTER, Align.CENTER, Align.MIN)) - "
+                f"Cylinder({fmt(inner, PLACES)}, {length}, "
+                "align=(Align.CENTER, Align.CENTER, Align.MIN))))"
+            ),
+        ]
 
     def rim(radius, angle):
         return (radius * math.cos(angle), radius * math.sin(angle))
@@ -179,10 +198,7 @@ def _bend_source(first, second) -> list[str] | None:
     outer_start, outer_mid, outer_end = (rim(outer, a) for a in (u_low, middle, u_high))
     inner_end, inner_mid, inner_start = (rim(inner, a) for a in (u_high, middle, u_low))
     return [
-        (
-            f"_bend = Plane(origin={fmt_tuple(base, PLACES)}, x_dir={fmt_tuple(across, PLACES)}, "
-            f"z_dir={fmt_tuple(along, PLACES)})"
-        ),
+        plane,
         (
             f"_prof = ThreePointArc({fmt_tuple(outer_start, PLACES)}, {fmt_tuple(outer_mid, PLACES)}, "
             f"{fmt_tuple(outer_end, PLACES)}) + Line({fmt_tuple(outer_end, PLACES)}, {fmt_tuple(inner_end, PLACES)}) "
@@ -253,6 +269,9 @@ def thin_wall_stock(document: dict, ctx: Context) -> tuple[str, list[str]] | Non
             drawable += face.area
     if total <= 0 or drawable / total < THIN_WALL_COVERAGE or len(code) <= 2:
         return None
+    code = _joinable(code)
+    if code is None:
+        return None
     code += _join_source(
         "Walls quiddity paired that meet the rest only through faces it did not pair "
         "come out as separate bits; the body is kept and they are left out."
@@ -281,3 +300,45 @@ def _join_source(note: str | None = None) -> list[str]:
     if note:
         lines += [f"# {note}", "part = max(part.solids(), key=lambda s: s.volume)"]
     return lines
+
+
+def _joinable(code: list[str]) -> list[str] | None:
+    """The piece source, less any piece the kernel cannot fuse onto the others.
+
+    Each piece's source ends with the line that appends it. The pieces are built and
+    fused in turn, as the script will do, and one whose fuse fails or leaves an invalid
+    solid is dropped from the source, so the script itself stays a plain sequence.
+    """
+    from build123d import Align  # noqa: F401 - the source below is run in this namespace
+
+    header, blocks, current = [], [], []
+    for line in code:
+        if not blocks and not current and not line.startswith(("#", "_")):
+            header.append(line)
+            continue
+        if line == "_pieces = []":
+            header.append(line)
+            continue
+        current.append(line)
+        if line.startswith("_pieces.append("):
+            blocks.append(current)
+            current = []
+    space: dict = {}
+    exec("from build123d import *\n" + "\n".join(header), space)  # noqa: S102
+    body, kept = None, []
+    for block in blocks:
+        try:
+            exec("\n".join(block), space)  # noqa: S102
+            piece = space["_pieces"][-1]
+            joined = piece if body is None else body.fuse(piece, tol=JOIN_TOLERANCE)
+            if not joined.is_valid or joined.volume <= 0:
+                raise ValueError("invalid join")
+        except Exception:  # noqa: BLE001 - a piece that will not join is left out
+            if space.get("_pieces"):
+                space["_pieces"] = [p for p in space["_pieces"] if p is not space["_pieces"][-1]]
+            continue
+        body = joined
+        kept += block
+    if body is None:
+        return None
+    return header + kept
