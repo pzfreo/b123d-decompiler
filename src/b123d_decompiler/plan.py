@@ -418,6 +418,9 @@ def build_plan(
         plan = _best_stock(plan, stocks, ctx, GOOD_ENOUGH if good_enough is None else good_enough)
     else:
         _accept_unverified(plan)
+    # A folded sheet built from quiddity's sheet-metal record is that record modelled.
+    if plan.stock_label.startswith("stock: sheet metal"):
+        plan.skipped.pop("sheet_metal_bodies", None)
     trial_seconds = [trial.get("seconds") or 0.0 for trial in plan.stock_trials]
     plan.timings = {
         "stock_search": round(stock_seconds, 1),

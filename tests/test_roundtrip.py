@@ -298,3 +298,39 @@ def test_the_billet_kept_is_the_one_that_ended_best(tmp_path):
     assert len(chosen) == 1
     assert chosen[0]["stock"] == plan.stock_label
     assert max(trial["iou"] for trial in trials) - chosen[0]["iou"] <= STOCK_TIE
+
+
+def bent_bracket():
+    """A 2 mm sheet folded once through 90 degrees at an inner radius of 2 mm."""
+    from build123d import Location
+
+    thickness, radius = 2.0, 2.0
+    corner = radius + thickness
+    base = Box(50, 40, thickness, align=(Align.MIN, Align.MIN, Align.MIN)).move(
+        Location((corner, 0, 0))
+    )
+    upright = Box(thickness, 40, 30, align=(Align.MIN, Align.MIN, Align.MIN)).move(
+        Location((0, 0, corner))
+    )
+    ring = Location((corner, 0, corner), (-90, 0, 0)) * (
+        Cylinder(corner, 40, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        - Cylinder(radius, 40, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    )
+    bend = ring & Box(corner, 40, corner, align=(Align.MIN, Align.MIN, Align.MIN))
+    return (base + upright + bend).clean()
+
+
+def test_a_sheet_metal_part_is_rebuilt_from_its_flanges_and_bends(tmp_path):
+    """A part quiddity reads as sheet metal is drawn as the sheet, not cut from a billet.
+
+    The flanges and the bend are exact, so the rebuild should match the part, and the
+    script should say it is a folded sheet with its thickness.
+    """
+    step = tmp_path / "bracket.step"
+    export_step(bent_bracket(), str(step))
+    plan, source = decompile(step, tmp_path / "bracket.py")
+    assert plan.stock_label.startswith("stock: sheet metal")
+    assert "THICKNESS = 2" in source
+    assert "sheet_metal_bodies" not in plan.skipped
+    report = analyse(step, tmp_path / "bracket.py", tmp_path / "bracket.rebuilt.step")
+    assert report["iou"] > 0.99

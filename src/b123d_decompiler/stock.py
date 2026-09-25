@@ -657,7 +657,28 @@ def stock_candidates(ctx: Context, document: dict) -> list[tuple[str, list[str]]
     turned_first = [stock for stock in chosen if "turned" in stock[0]][:1]
     rest = [stock for stock in chosen if stock not in turned_first]
     ordered = (turned_first + rest)[:STOCK_TRIALS]
+    # So is the folded sheet, when quiddity reads the part as sheet metal: it is the
+    # part itself, not a billet to cut down, and no outline comes close to it.
+    sheet = _sheet_stock(document, ctx)
+    if sheet is not None:
+        ordered = [sheet] + ordered[: STOCK_TRIALS - 1]
     return ordered or [_envelope_stock(ctx)]
+
+
+def _sheet_stock(document: dict, ctx: Context):
+    """The flanges-and-bends body for a sheet-metal part, if it builds one sound solid."""
+    from .sheet import sheet_metal_stock
+
+    try:
+        sheet = sheet_metal_stock(document, ctx)
+        if sheet is None:
+            return None
+        built = run_source(sheet[1], "part")
+    except Exception:  # noqa: BLE001 - a sheet that will not build leaves the billets
+        return None
+    if built is None or len(built.solids()) != 1 or built.volume <= 0:
+        return None
+    return sheet
 
 
 def stock_source(ctx: Context, document: dict) -> tuple[str, list[str]]:
