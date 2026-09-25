@@ -170,3 +170,40 @@ class MeshInside:
                 distance = np.where(hit & (distance > 0), distance, np.inf)
             found[chosen] = distance.min(axis=1)
         return found
+
+    def crossings(self, points, axis: int, sign: float) -> list[np.ndarray]:
+        """Every distance at which a ray from each point, one way along an axis, meets
+        the surface, nearest first. A ray from outside the part alternates entering and
+        leaving it, so these pair up into the stretches of the ray that are material."""
+        points = np.asarray(points, dtype=float).reshape(-1, 3)
+        first, second, low, span, members = self.axes[axis]
+        found = [np.empty(0) for _ in range(len(points))]
+        cell = np.floor((points[:, [first, second]] - low) / span * GRID).astype(int)
+        inside_grid = np.all((cell >= 0) & (cell < GRID), axis=1)
+        keys = cell[:, 0] * GRID + cell[:, 1]
+        for key in np.unique(keys[inside_grid]):
+            chosen = np.nonzero(inside_grid & (keys == key))[0]
+            candidates = members.get((int(key) // GRID, int(key) % GRID))
+            if candidates is None:
+                continue
+            tri = self.triangles[candidates]
+            a, b, c = tri[:, 0], tri[:, 1], tri[:, 2]
+            p = points[chosen]
+            pu, pv = p[:, None, first], p[:, None, second]
+            au, av = a[None, :, first], a[None, :, second]
+            bu, bv = b[None, :, first], b[None, :, second]
+            cu, cv = c[None, :, first], c[None, :, second]
+            det = (bv - cv) * (au - cu) + (cu - bu) * (av - cv)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                w1 = ((bv - cv) * (pu - cu) + (cu - bu) * (pv - cv)) / det
+                w2 = ((cv - av) * (pu - cu) + (au - cu) * (pv - cv)) / det
+                w3 = 1.0 - w1 - w2
+                hit = (det != 0) & (w1 >= 0) & (w2 >= 0) & (w3 >= 0)
+                height = (
+                    w1 * a[None, :, axis] + w2 * b[None, :, axis] + w3 * c[None, :, axis]
+                )
+                distance = (height - p[:, None, axis]) * sign
+                keep = hit & (distance > 0)
+            for row, index in enumerate(chosen):
+                found[index] = np.unique(np.round(distance[row][keep[row]], 9))
+        return found

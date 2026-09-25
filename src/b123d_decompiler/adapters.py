@@ -1530,6 +1530,9 @@ def _outline_segments(face, project):
 #: before it counts as running into something.
 _TRIM_TOLERANCE = 0.02
 
+#: ...and no more than this fraction of the whole part, as verification demands.
+_TRIM_PART_SHARE = 0.002
+
 #: How many unclaimed faces are worth trying on one part, largest first. This covers all
 #: but the most involved parts outright, and beyond it the returns are small while each
 #: candidate still costs several booleans to place.
@@ -1579,8 +1582,38 @@ def _ray_depth(segments, origin, first, second, outward, most: float, ctx: Conte
     lift = ctx.diagonal * 1e-5
     places = np.asarray(origin)[None, :] + flat[:, :1] * np.asarray(first)[None, :] \
         + flat[:, 1:2] * np.asarray(second)[None, :] + lift * np.asarray(outward)[None, :]
-    distance = _mesh_for(ctx.part).first_hit(places, axis, 1.0 if outward[axis] > 0 else -1.0)
-    depth = float(min(distance.min(), most))
+    mesh = _mesh_for(ctx.part)
+    rays = mesh.crossings(places, axis, 1.0 if outward[axis] > 0 else -1.0)
+    # A ray starting inside something standing on the face begins in material, and its
+    # first crossing leaves it rather than entering.
+    starts_inside = mesh.contains(places)
+    # The same allowance the old search gave a trim: up to _TRIM_TOLERANCE of its volume
+    # may be material. Each ray alternates in and out of the part, so the material along
+    # it to any depth is the sum of its in-stretches, and the prism's share is the mean
+    # over the rays. Counting only the first thing each ray meets is far too strict: a
+    # trim is drawn from the face's outer boundary, a boss standing on the face stops
+    # every ray in its footprint, and on one part that cut a trim of 1.3 million cubic
+    # millimetres down to 26 thousand, though the boss itself was a sliver of it.
+    def material(depth: float) -> float:
+        total = 0.0
+        for hits, inside in zip(rays, starts_inside, strict=True):
+            edges = ([0.0] if inside else []) + list(hits)
+            for enter, leave in zip(edges[0::2], edges[1::2] + [np.inf], strict=False):
+                if enter >= depth:
+                    break
+                total += min(leave, depth) - enter
+        return total / (len(rays) * depth)
+
+    # Both limits verification will apply: a share of the trim itself, and a share of
+    # the whole part. Meeting only the first lets a large trim run deep, fail the second,
+    # and be thrown away whole, where a shallower one would have been kept.
+    area, allowance = region.area, _TRIM_PART_SHARE * float(ctx.part.volume)
+    stops = sorted({float(h) for hits in rays for h in hits if 0 < h < most} | {most})
+    depth = 0.0
+    for candidate in stops:
+        share = material(candidate)
+        if share <= _TRIM_TOLERANCE and share * area * candidate <= allowance:
+            depth = candidate
     # Zero, not None, when the space is blocked straight away: the rays have answered,
     # and asking again by building prisms only finds the same nothing, slowly.
     return depth if depth > ctx.diagonal * 1e-4 else 0.0
