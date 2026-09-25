@@ -136,7 +136,22 @@ def _spend_trim_budget(plan: BuildPlan, ctx: Context) -> None:
         spent += cost
 
 
-def _reject_destructive(plan: BuildPlan, tools: dict[int, Part], stock: Part):
+def _exact_overlap(tool, reference, restorers) -> float:
+    """Volume of real material a cut takes, by boolean rather than by sampling."""
+    from .geom import common_volume
+
+    taken = tool
+    for restorer in restorers:
+        taken = taken - restorer
+    try:
+        return common_volume(taken, reference)
+    except Exception:  # noqa: BLE001 - a cut that cannot be measured is not proved empty
+        return float(tool.volume)
+
+
+def _reject_destructive(
+    plan: BuildPlan, tools: dict[int, Part], stock: Part, keep_whole: bool = False
+):
     """Apply the ops in order and drop any that leave nothing behind.
 
     Building a tool and measuring it is not the same as using it. A malformed tool can
@@ -179,6 +194,10 @@ def _reject_destructive(plan: BuildPlan, tools: dict[int, Part], stock: Part):
                 raise ValueError(
                     f"it moved {moved:.4g} mm\u00b3 with a tool of only {tool.volume:.4g}"
                 )
+            # A stock that is already the part is one piece, and a cut that splits it
+            # has gone through a wall the part keeps.
+            if keep_whole and len(candidate.solids()) > len(part.solids()):
+                raise ValueError("it would cut the part in two")
         except Exception as error:  # noqa: BLE001 - a destructive op is a reportable outcome
             op.status = model.FAILED
             op.note = "; ".join(
@@ -225,6 +244,15 @@ def _verify(plan: BuildPlan, ctx: Context, overlaps: dict | None = None):
         (EXACT_OVERLAP_LIMIT, EXACT_PART_LIMIT) if exact else (OVERLAP_LIMIT, PART_LIMIT)
     )
 
+    # Trims carve a billet down to the part. A stock drawn from the part's own sheet
+    # or walls has nothing to carve, and on thin walls hundreds of trims leave a solid
+    # the kernel can no longer be trusted with, so only the recognised features go on.
+    if exact:
+        for op in plan.ops:
+            if op.speculative and op.status == model.PLANNED:
+                op.status = model.UNPROVED
+                op.note = "; ".join(filter(None, [op.note, "an exact stock is not trimmed"]))
+
     for position, op in enumerate(plan.ops):
         tool = tools.get(position)
         if tool is not None and op.status == model.PLANNED and op.kind == "fuse":
@@ -245,9 +273,18 @@ def _verify(plan: BuildPlan, ctx: Context, overlaps: dict | None = None):
         tool = tools.get(position)
         if tool is None or op.kind != "cut" or op.status != model.PLANNED:
             continue
-        key = (position, restoring)
+        # Sampling finds material in proportion to its volume, and thin walls have
+        # little: on a 2 mm sheet a trim can slice straight through walls without one
+        # sample landing in them. A billet shrugs that off; an exact stock cannot, so
+        # its cuts are measured with a boolean against the part.
+        key = (position, restoring, exact)
         if key not in overlaps:
-            overlaps[key] = round(material_volume(tool, ctx.part, restorers), 6)
+            overlaps[key] = round(
+                _exact_overlap(tool, ctx.part, restorers)
+                if exact
+                else material_volume(tool, ctx.part, restorers),
+                6,
+            )
         op.overlap = overlaps[key]
         if (
             op.overlap / op.volume > overlap_limit
@@ -266,12 +303,12 @@ def _verify(plan: BuildPlan, ctx: Context, overlaps: dict | None = None):
             op.status = model.OK
 
     _spend_trim_budget(plan, ctx)
-    return _reject_destructive(plan, tools, stock)
+    return _reject_destructive(plan, tools, stock, keep_whole=exact)
 
 
 def _is_exact_stock(label: str) -> bool:
     """Whether a stock is the part itself rather than a billet to carve."""
-    return label.startswith("stock: sheet metal")
+    return label.startswith(("stock: sheet metal", "stock: thin wall"))
 
 
 def _cylinder_catalogue(document: dict):

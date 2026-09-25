@@ -334,3 +334,24 @@ def test_a_sheet_metal_part_is_rebuilt_from_its_flanges_and_bends(tmp_path):
     assert "sheet_metal_bodies" not in plan.skipped
     report = analyse(step, tmp_path / "bracket.py", tmp_path / "bracket.rebuilt.step")
     assert report["iou"] > 0.99
+
+
+def test_a_thin_walled_part_is_rebuilt_from_its_walls(tmp_path):
+    """A thin-walled part with flat walls is drawn wall by wall, not cut from a billet.
+
+    An open tray has 2 mm walls meeting at sharp corners, so quiddity reads it as a
+    thin-walled body but not as folded sheet. Each wall is its outer face pushed in by
+    the thickness, which is exact.
+    """
+    from build123d import Pos
+
+    tray = Box(60, 40, 20, align=(Align.CENTER, Align.CENTER, Align.MIN)) - Pos(0, 0, 2) * Box(
+        56, 36, 20, align=(Align.CENTER, Align.CENTER, Align.MIN)
+    )
+    step = tmp_path / "tray.step"
+    export_step(tray, str(step))
+    plan, source = decompile(step, tmp_path / "tray.py")
+    assert plan.stock_label.startswith("stock: thin wall")
+    assert "THICKNESS = 2" in source
+    report = analyse(step, tmp_path / "tray.py", tmp_path / "tray.rebuilt.step")
+    assert report["iou"] > 0.99

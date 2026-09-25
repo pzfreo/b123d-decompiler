@@ -666,19 +666,27 @@ def stock_candidates(ctx: Context, document: dict) -> list[tuple[str, list[str]]
 
 
 def _sheet_stock(document: dict, ctx: Context):
-    """The flanges-and-bends body for a sheet-metal part, if it builds one sound solid."""
-    from .sheet import sheet_metal_stock
+    """The part drawn from its sheet or its walls, if it builds one sound solid.
 
-    try:
-        sheet = sheet_metal_stock(document, ctx)
-        if sheet is None:
-            return None
-        built = run_source(sheet[1], "part")
-    except Exception:  # noqa: BLE001 - a sheet that will not build leaves the billets
-        return None
-    if built is None or len(built.solids()) != 1 or built.volume <= 0:
-        return None
-    return sheet
+    A sheet-metal record gives the flanges and bends; failing that, a thin-walled
+    record whose walls are flat or cylindrical gives the same kind of pieces.
+    """
+    from .sheet import MAIN_BODY_SHARE, sheet_metal_stock, thin_wall_stock
+
+    for build in (sheet_metal_stock, thin_wall_stock):
+        try:
+            sheet = build(document, ctx)
+            if sheet is None:
+                continue
+            built = run_source(sheet[1], "part")
+        except Exception:  # noqa: BLE001 - a sheet that will not build leaves the billets
+            continue
+        if built is None or built.volume <= 0 or len(built.solids()) != 1:
+            continue
+        pieces_volume = run_source(sheet[1][: sheet[1].index("part = _pieces[0]")] + ["part = Compound(_pieces)"], "part").volume
+        if built.volume >= MAIN_BODY_SHARE * pieces_volume * 0.99 or build is sheet_metal_stock:
+            return sheet
+    return None
 
 
 def stock_source(ctx: Context, document: dict) -> tuple[str, list[str]]:

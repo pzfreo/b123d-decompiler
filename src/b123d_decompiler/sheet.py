@@ -81,7 +81,7 @@ def sheet_metal_stock(document: dict, ctx: Context) -> tuple[str, list[str]] | N
         if found:
             code.append(f"# formed feature {number}")
             code += found
-    code.append(f"part = _pieces[0].fuse(*_pieces[1:], tol={JOIN_TOLERANCE}).clean()")
+    code += _join_source()
     bends = len(record.get("bends") or ())
     label = (
         f"stock: sheet metal {fmt(thickness, 3)} thick, "
@@ -191,3 +191,93 @@ def _bend_source(first, second) -> list[str] | None:
         ),
         f"_pieces.append(extrude(_bend * make_face(_prof), amount={fmt(v_high - v_low, PLACES)}))",
     ]
+
+
+#: A thin-walled body is drawn from its walls only when this much of the paired area
+#: is flat or cylindrical, the two kinds of wall that can be drawn exactly.
+THIN_WALL_COVERAGE = 0.97
+
+
+def thin_wall_record(document: dict) -> dict | None:
+    """The thin-walled body quiddity found, if any."""
+    for feature in document.get("features") or ():
+        if feature.get("family") == "thin_wall_bodies":
+            return feature["record"]
+    return None
+
+
+def thin_wall_stock(document: dict, ctx: Context) -> tuple[str, list[str]] | None:
+    """(label, code) building a thin-walled part from its walls, or None.
+
+    Quiddity pairs the faces of a body whose material is a constant thickness and
+    says which side of each pair is the outside. A flat wall is its outer face pushed
+    inward through the wall, and a curved wall between coaxial cylinders is the ring
+    sector between them, the same pieces a folded sheet is made of. Walls of any other
+    shape cannot be drawn exactly this way, so a body with more than a sliver of them
+    is left to the billets.
+    """
+    from .adapters import face_profile_source
+
+    record = thin_wall_record(document)
+    if record is None or not record.get("face_pairs"):
+        return None
+    faces = ctx.part.faces()
+    outer = set((record.get("history_hint") or {}).get("outer_faces") or ())
+    thickness = float(record["thickness"])
+    total = drawable = 0.0
+    code = [f"THICKNESS = {fmt(thickness)}", "_pieces = []"]
+    for pair in record["face_pairs"]:
+        first, second = pair["first_face"], pair["second_face"]
+        outside = first if first in outer or second not in outer else second
+        inside = second if outside == first else first
+        face = faces[outside]
+        total += face.area
+        kind = face.geom_type.name
+        if kind == "PLANE":
+            normal = face.normal_at(face.center())
+            outward = (normal.X, normal.Y, normal.Z)
+            drawn = face_profile_source(face, outward, places=PLACES)
+            if drawn is None:
+                continue
+            code += drawn[0]
+            code.append(
+                "_pieces.append(extrude(_plane * make_face(_prof), amount=THICKNESS, "
+                f"dir={fmt_tuple(tuple(-v for v in outward), PLACES)}))"
+            )
+            drawable += face.area
+        elif kind == "CYLINDER" and faces[inside].geom_type.name == "CYLINDER":
+            piece = _bend_source(face, faces[inside])
+            if piece is None:
+                continue
+            code += piece
+            drawable += face.area
+    if total <= 0 or drawable / total < THIN_WALL_COVERAGE or len(code) <= 2:
+        return None
+    code += _join_source(
+        "Walls quiddity paired that meet the rest only through faces it did not pair "
+        "come out as separate bits; the body is kept and they are left out."
+    )
+    label = f"stock: thin wall {fmt(thickness, 3)} thick, {len(record['face_pairs'])} walls"
+    return label, code
+
+
+#: When pieces do not all join, the largest solid is kept only if it holds this much of
+#: the volume; otherwise the pieces are not a body at all and the stock is not offered.
+MAIN_BODY_SHARE = 0.9
+
+
+def _join_source(note: str | None = None) -> list[str]:
+    """Source fusing the pieces one at a time, then keeping the one body they form.
+
+    Fusing all of them in a single call can leave an invalid solid where fusing them
+    in turn does not.
+    """
+    lines = [
+        "part = _pieces[0]",
+        "for _piece in _pieces[1:]:",
+        f"    part = part.fuse(_piece, tol={JOIN_TOLERANCE})",
+        "part = part.clean()",
+    ]
+    if note:
+        lines += [f"# {note}", "part = max(part.solids(), key=lambda s: s.volume)"]
+    return lines
