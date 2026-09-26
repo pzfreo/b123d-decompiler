@@ -225,23 +225,25 @@ there is a real regression in an adapter.
 
 ## Where it stands
 
-Measured on 24 September 2026 against quiddity 0.3.3.
+Measured on 26 September 2026 against quiddity 0.3.5.
 
 | | mfcadpp (40) | holdout (33) | rotational (5) | realistic (28) | CADGenBench edit, working half (16) |
 |---|---|---|---|---|---|
-| IoU median | 0.997 | 1.000 | 0.964 | 0.818 | 0.416 |
-| parts at IoU 0.9 or above | 37 | 29 | 3 | 10 | 2 |
-| missing material, mean | 0.16 % | 0.05 % | 0.12 % | 1.12 % | 0.63 % |
-| extra material, mean | 3.4 % | 9.1 % | 4.7 % | 149 % | 782 % |
-| did not score | 0 | 0 | 1 | 4 | 2 |
+| IoU median | 0.999 | 1.000 | 0.985 | 0.971 | 0.836 |
+| parts at IoU 0.9 or above | 40 | 33 | 4 | 21 | 5 |
+| missing material, mean | 0.19 % | 0.03 % | 0.20 % | 0.17 % | 1.04 % |
+| extra material, mean | 0.3 % | 0.1 % | 3.3 % | 16.7 % | 42.7 % |
+| did not score | 0 | 0 | 1 | 1 | 0 |
 
 The first two are MFCAD++ benchmark blocks; adapters were developed against the first and
 never run against the second until they were finished, and the close medians say they
 generalise. The rotational five from Gramel and CADGenBench exercise the turned billet and the
 swept chamfers that nothing in MFCAD++ touches. The realistic set is 28 parts from NIST,
-build123d's Too Tall Toby set, CADGenBench and Gramel.
+build123d's Too Tall Toby set, CADGenBench and Gramel. The one part that did not score there
+fails recognition on quiddity 0.3.5, a bug fixed on quiddity's main branch.
 
-The last column is where the tool falls down. It is half of the CADGenBench editing corpus,
-held back as a target of IoU 0.9 for every part, with the other half kept unseen. Most of those
-parts are shapes no axis-aligned shadow comes close to, and the error is almost all material
-left behind rather than lost. Full numbers and the reasons in `RESULTS.md`.
+The last column is the hardest. It is half of the CADGenBench editing corpus, held back as a
+target of IoU 0.9 for every part, with the other half kept unseen. Sheet-metal, thin-walled
+and free-form panel parts are now drawn from quiddity's body-level records rather than cut
+from a billet; what remains is mostly material left behind on moulded shells, an impeller and
+a volute. Full numbers and the reasons in `RESULTS.md`.

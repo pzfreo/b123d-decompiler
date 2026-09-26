@@ -14,9 +14,21 @@ uv run python tools/corpus_summary.py results/
 
 ## Result
 
-Measured on 24 September 2026 against quiddity 0.3.3. Medians are the ordinary median of the
-parts that scored, so they differ slightly from the batch printout, which takes the upper of
-the two middle values.
+Measured on 26 September 2026 against quiddity 0.3.5: MFCAD++, holdout and realistic at
+e8859c0, the CADGenBench working half at e46d433 (one commit earlier; the only change since
+checks faces the trim rays refuse the slow way, which changed no part on the other three
+corpora for the worse). Medians are the ordinary median of the parts that scored.
+
+| measure | mfcadpp (40) | holdout (33) | rotational (5) | realistic (28) | CADGenBench edit, working half (16) |
+|---|---|---|---|---|---|
+| parts that scored | 40 | 33 | 4 | 27 | 16 |
+| IoU mean | 0.995 | 0.999 | 0.968 | 0.906 | 0.762 |
+| IoU median | 0.999 | 1.000 | 0.985 | 0.971 | 0.836 |
+| parts at IoU 0.9 or above | 40 | 33 | 4 | 21 | 5 |
+| missing material, mean | 0.19 % | 0.03 % | 0.20 % | 0.17 % | 1.04 % |
+| extra material, mean | 0.3 % | 0.1 % | 3.3 % | 16.7 % | 42.7 % |
+
+The previous measurement, on 24 September against quiddity 0.3.3, was:
 
 | measure | mfcadpp (40) | holdout (33) | rotational (5) | realistic (28) | CADGenBench edit, working half (16) |
 |---|---|---|---|---|---|
@@ -24,92 +36,87 @@ the two middle values.
 | IoU mean | 0.969 | 0.955 | 0.956 | 0.713 | 0.469 |
 | IoU median | 0.997 | 1.000 | 0.964 | 0.818 | 0.416 |
 | parts at IoU 0.9 or above | 37 | 29 | 3 | 10 | 2 |
-| missing material, mean | 0.16 % | 0.05 % | 0.12 % | 1.12 % | 0.63 % |
 | extra material, mean | 3.4 % | 9.1 % | 4.7 % | 149 % | 782 % |
-
-The previous measurement, before the changes described under "Measurement, defended" and the
-three-axis stock, was:
-
-| measure | mfcadpp (40) | holdout (33) | rotational (5) | realistic (28) |
-|---|---|---|---|---|
-| IoU median | 0.988 | 0.988 | 0.939 | 0.576 |
-| parts at IoU 0.9 or above | 35 | 26 | 4 | 5 |
-| extra material, mean | 4.2 % | 13.8 % | 4.9 % | 196 % |
 
 ### What moved
 
-On the four older corpora, nothing that scored before scores worse by more than 0.03, and
-many parts rose sharply: on
-the realistic set, NIST CTC 04 from 0.504 to 0.950, Too Tall Toby ppp0106 from 0.576 to 0.969
-and curved-support from 0.643 to 1.000; on the holdout, parts 181 and 238 went to 1.000 from
-0.823 and 0.781.
+No part scores worse than it did on 24 September. The gains come from:
 
-Five parts got worse, and they are the open problems:
+- **Choosing the billet by carrying several through to a finished rebuild.** Outlines are
+  drawn exactly in 2D (shapely) as lines and arcs, stepped billets are offered alongside
+  shadows, and the trials keep whichever ends best.
+- **Trims measured against the mesh.** Containment is counted on a triangle mesh rather than
+  asked of the kernel point by point, trim depth is found by casting rays, and a face the
+  rays refuse is measured by building its prism.
+- **Parts drawn as what they are, from quiddity 0.3.5's body-level records.**
+  - A **sheet-metal** part is its flanges extruded through the sheet and its bends as ring
+    sectors: Too Tall Toby's sm-hanger went from stopped-after-three-hours to 1.000.
+  - A **thin-walled** part with flat or cylindrical walls is its outer faces pushed in by the
+    wall: cgb245 went from 0.138 to 0.901, NIST CTC 03 from 0.046 to 0.975.
+  - A **thin-walled panel with free-form skins** is its plan outline cut back by the skins,
+    written exactly as B-spline surfaces, less its cavity: cgb241 went from 0.011 to 0.825.
 
-| part | corpus | before | now |
+  These stocks are the part itself, so they are checked strictly: every cut is measured by a
+  boolean, since sampling misses 2 mm walls, and no trims are applied. Across all 117 parts
+  they were chosen only for those four.
+- **Speed.** The part's bounding box is taken from its cached mesh, not asked of the kernel
+  for every tool: 1.8 s a call on a thousand-face part had put cgb243 and cgb247 past the time
+  limit. Both now finish, and cgb247 scores 0.910.
+
+### Open problems
+
+| part | corpus | now | why |
 |---|---|---|---|
-| grm-string_post | rotational and realistic | 0.939 | kernel crash |
-| nist_ctc_02 | realistic | 0.439 | kernel crash |
-| ttt-ppp0101 | realistic | 0.802 | rebuilt solid invalid |
-| ttt-23-02-02-sm-hanger | realistic | 0.139 | stopped after three hours |
-| 340 | holdout | 0.851 | 0.825 |
-
-The hanger ran at full CPU for three hours before I stopped it. The batch has no per-part
-time limit, so a part that never finishes holds the whole run.
+| cgb-threaded_connector_109 | rotational and realistic | not recognised | a quiddity 0.3.5 bug (pzfreo/quiddity#754), fixed on its main branch; 0.938 there |
+| cgb207 | CADGenBench | 0.362 | 3 mm moulded shell whose walls meet through fillets quiddity does not pair |
+| cgb203 | CADGenBench | 0.400 | impeller: seven swept blades; quiddity now reports the pattern, the decompiler has no way to build a blade |
+| cgb249 | CADGenBench | 0.492 | volute casing; its walls are not of constant thickness, so none of the new routes applies |
+| cgb243 | CADGenBench | 0.558 | not yet diagnosed |
 
 ## Realistic parts, by source
 
 | source | parts | scored | median IoU | best |
 |---|---|---|---|---|
-| NIST CTC/FTC | 10 | 9 | 0.533 | 0.953 |
-| build123d Too Tall Toby | 13 | 11 | 0.863 | 1.000 |
-| CADGenBench | 2 | 2 | 0.915 | 0.936 |
-| Gramel | 3 | 2 | 0.996 | 1.000 |
+| NIST CTC/FTC | 10 | 10 | 0.962 | 0.987 |
+| build123d Too Tall Toby | 13 | 13 | 0.983 | 1.000 |
+| CADGenBench | 2 | 1 | 0.900 | 0.900 |
+| Gramel | 3 | 3 | 1.000 | 1.000 |
 
-The Too Tall Toby parts moved most, from a median of 0.346 to 0.863. They are plates with
-things formed into them, and intersecting the part's shadows along three axes is what fits
-them. NIST is now the weakest source: its parts are large, have hundreds of faces, and lose
-the most to shapes no axis-aligned shadow comes close to.
+NIST was the weakest source on 24 September, at a median of 0.533; the mesh-counted trims
+and ray-cast depths took it to 0.962. The one CADGenBench part not scored is the threaded
+connector (see above).
 
 ## CADGenBench editing corpus
 
 The 32 parts of `splits/editing32.txt` were sorted and split alternately. The working half is
 the table below; the holdout half (202, 204, 206, 208, 211, 214, 217, 224, 229, 231, 240, 242,
-244, 246, 248, 250) has not been run since the split.
+244, 246, 248, 250) has not been run since the split. The goal for the working half is IoU
+0.9 for every part.
 
-| part | first run | now | missing | extra | surface quiddity associated |
-|---|---|---|---|---|---|
-| cgb215 | crashed | 0.9457 | 0.13 % | 5.6 % | 49 % |
-| cgb218 | 0.9024 | 0.9017 | 0.00 % | 11.1 % | 25 % |
-| cgb209 | 0.4353 | 0.7746 | 0.00 % | 29.1 % | 60 % |
-| cgb225 | 0.1691 | 0.7653 | 0.00 % | 30.7 % | 21 % |
-| cgb238 | 0.3198 | 0.5825 | 1.20 % | 69.6 % | 32 % |
-| cgb201 | crashed | 0.4621 | 0.05 % | 116.3 % | 40 % |
-| cgb205 | 0.4944 | 0.4219 | 0.25 % | 136.4 % | 56 % |
-| cgb247 | 0.3450 | 0.4103 | 0.27 % | 143.1 % | 42 % |
-| cgb243 | crashed | 0.3782 | 5.98 % | 148.6 % | 58 % |
-| cgb249 | 0.3414 | 0.3634 | 0.23 % | 174.5 % | 6 % |
-| cgb230 | 0.1511 | 0.2332 | 0.00 % | 328.8 % | 53 % |
-| cgb203 | 0.1818 | 0.1845 | 0.00 % | 442.0 % | 30 % |
-| cgb245 | 0.0674 | 0.1383 | 0.30 % | 621.0 % | 15 % |
-| cgb241 | 0.0116 | 0.0113 | 0.46 % | 8689.5 % | 6 % |
-| cgb207 | crashed | crashed | | | |
-| cgb212 | 0.3985 | crashed | | | |
+| part | first run | 24 September | now | missing | extra | stock | surface quiddity associated |
+|---|---|---|---|---|---|---|---|
+| cgb215 | crashed | 0.9457 | 0.9463 | 0.40 % | 5.2 % | outline | 49 % |
+| cgb209 | 0.4353 | 0.7746 | 0.9347 | 0.06 % | 6.9 % | outline | 60 % |
+| cgb218 | 0.9024 | 0.9017 | 0.9322 | 0.04 % | 7.2 % | outline | 25 % |
+| cgb247 | 0.3450 | 0.4103 | 0.9102 | 0.46 % | 9.4 % | outline | 41 % |
+| cgb245 | 0.0674 | 0.1383 | 0.9008 | 5.21 % | 5.2 % | thin wall | 100 % |
+| cgb230 | 0.1511 | 0.2332 | 0.8976 | 0.02 % | 11.4 % | outline | 53 % |
+| cgb238 | 0.3198 | 0.5825 | 0.8526 | 1.48 % | 15.6 % | outline | 32 % |
+| cgb205 | 0.4944 | 0.4219 | 0.8457 | 4.21 % | 13.3 % | outline | 56 % |
+| cgb225 | 0.1691 | 0.7653 | 0.8270 | 0.27 % | 20.6 % | outline | 21 % |
+| cgb241 | 0.0116 | 0.0113 | 0.8247 | 1.34 % | 19.6 % | thin panel | 100 % |
+| cgb201 | crashed | 0.4621 | 0.7994 | 0.52 % | 24.4 % | outline | 40 % |
+| cgb212 | 0.3985 | crashed | 0.7108 | 0.63 % | 39.8 % | outline | 48 % |
+| cgb243 | crashed | 0.3782 | 0.5577 | 1.29 % | 77.0 % | outline | 59 % |
+| cgb249 | 0.3414 | 0.3634 | 0.4916 | 0.25 % | 102.9 % | outline | 6 % |
+| cgb203 | 0.1818 | 0.1845 | 0.3996 | 0.00 % | 150.3 % | outline | 30 % |
+| cgb207 | crashed | crashed | 0.3621 | 0.40 % | 175.1 % | outline | 91 % |
 
-Two parts meet the target. The mean went from 0.318 to 0.469. What remains is nearly all
-extra material, which has three distinct causes:
+Five parts meet the target, against two on 24 September, and all sixteen now score; the mean
+went from 0.469 to 0.762. Four more are within 0.08 of it. What remains is still mostly
+extra material, and the four worst have distinct causes, listed under "Open problems".
 
-- **No shadow resembles the part.** cgb241 is splines and tubes; its tightest shadow along any
-  axis is 25 times its own volume, and quiddity associates 6 % of its surface. Stock-and-cut
-  cannot build it. That is a recognition gap, not a decompiler defect.
-- **No shadow finishes in time.** cgb203 still falls back to the bounding box, which is why it
-  has not moved.
-- **The part is far from its hull.** cgb225's rebuild holds all of the part and 31 % more; the
-  remaining trims that would remove it cut into real material and are refused.
-
-cgb205 fell from 0.494 to 0.422 and cgb212 now crashes. Neither has been diagnosed yet.
-
-## Why realistic parts are hard
+## Why realistic parts were hard (analysis of 24 September and earlier)
 
 The error is overwhelmingly material left behind, not material wrongly removed: 149 %
 extra against 1.1 % missing on the current run. The analysis below was made on the previous
