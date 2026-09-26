@@ -1968,7 +1968,11 @@ def propose_face_trims(
             ]
 
         depth = _ray_depth(segments, origin, first, second, outward, reach + ctx.margin, ctx)
-        if depth is None:
+        # The rays judge a depth by where they cross the mesh, which can find no depth
+        # at all where building and measuring the prism does: on curved-support two
+        # faces the rays refused cleared 84,000 mm\u00b3 each once measured. So a refusal
+        # is checked the slow way too, as a face the rays cannot measure is.
+        if not depth:
             depth = _deepest_empty(build, reach + ctx.margin, ctx)
         if not depth:
             passed_over += 1  # nothing in front of this face is provably empty
