@@ -46,6 +46,14 @@ class Op:
     #: Proposed from evidence that describes a face rather than a feature. It has to
     #: prove it removes only empty space, or it is dropped rather than flagged.
     speculative: bool = False
+    #: The feature's own dimensions, by name, which `code` refers to. The script lists
+    #: them together at the top, so a hole is resized by changing one number there.
+    params: dict = field(default_factory=dict)
+
+    @property
+    def source(self) -> list[str]:
+        """The code with its dimensions assigned first, runnable on its own."""
+        return [f"{name} = {fmt(value)}" for name, value in self.params.items()] + list(self.code)
 
     @property
     def emitted(self) -> bool:

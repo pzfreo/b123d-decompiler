@@ -54,7 +54,7 @@ def _build_tools(ops: list[Op]) -> dict[int, Part]:
         if op.status != model.PLANNED:
             continue  # an adapter already refused it and said why
         try:
-            tool = run_source(op.code)
+            tool = run_source(op.source)
             op.volume = round(float(tool.volume), 6)
             if op.volume <= 1e-9:
                 op.status = model.INERT

@@ -354,33 +354,51 @@ def hole(feature: dict, ctx: Context) -> Op | None:
         offset, length = 0.0, depth
 
     label = f"hole \u00d8{fmt(diameter, 3)} x {fmt(depth, 3)} {bottom}, axis {_axis_name(axis)}"
+    # The hole's own dimensions are named, so the script says what they are and a
+    # hole is resized in one place. How far a through hole runs on past its wall is
+    # construction, not a dimension of the hole, and stays a plain number.
+    name = f"HOLE_{feature['index']}"
+    params = {f"{name}_DIAMETER": diameter}
+    if bottom == "through":
+        run = fmt(length)
+    else:
+        params[f"{name}_DEPTH"] = length
+        run = f"{name}_DEPTH"
     shift = "" if abs(offset) < 1e-9 else f"Pos(0, 0, {fmt(offset)}) * "
     code = [
         f"_mouth = Plane(origin={fmt_tuple(location)}, z_dir={fmt_tuple(axis)})",
         (
-            f"tool = _mouth * {shift}Cylinder({fmt(diameter / 2)}, {fmt(length)}, "
+            f"tool = _mouth * {shift}Cylinder({name}_DIAMETER / 2, {run}, "
             f"align=(Align.CENTER, Align.CENTER, Align.MIN))"
         ),
     ]
 
-    for name in ("cbore", "spotface"):
-        step = record.get(name)
+    for kind in ("cbore", "spotface"):
+        step = record.get(kind)
         if step:
+            prefix = f"{name}_{kind.upper()}"
+            params[f"{prefix}_DIAMETER"] = float(step["diameter"])
+            params[f"{prefix}_DEPTH"] = float(step["depth"])
             code.append(
-                f"tool += _mouth * Cylinder({fmt(float(step['diameter']) / 2)}, "
-                f"{fmt(float(step['depth']))}, align=(Align.CENTER, Align.CENTER, Align.MIN))"
+                f"tool += _mouth * Cylinder({prefix}_DIAMETER / 2, {prefix}_DEPTH, "
+                "align=(Align.CENTER, Align.CENTER, Align.MIN))"
             )
-            label += f" + {name} \u00d8{fmt(float(step['diameter']), 3)}"
+            label += f" + {kind} \u00d8{fmt(float(step['diameter']), 3)}"
     csink = record.get("csink")
     if csink:
+        prefix = f"{name}_CSINK"
+        params[f"{prefix}_DIAMETER"] = float(csink["major_diameter"])
+        params[f"{prefix}_DEPTH"] = float(csink["depth"])
         code.append(
-            f"tool += _mouth * Cone({fmt(float(csink['major_diameter']) / 2)}, "
-            f"{fmt(float(csink['drill_diameter']) / 2)}, {fmt(float(csink['depth']))}, "
-            f"align=(Align.CENTER, Align.CENTER, Align.MIN))"
+            f"tool += _mouth * Cone({prefix}_DIAMETER / 2, "
+            f"{fmt(float(csink['drill_diameter']) / 2)}, {prefix}_DEPTH, "
+            "align=(Align.CENTER, Align.CENTER, Align.MIN))"
         )
         label += f" + csink \u00d8{fmt(float(csink['major_diameter']), 3)}"
 
-    return Op("cut", "holes", feature["index"], label, code, note="; ".join(notes))
+    return Op(
+        "cut", "holes", feature["index"], label, code, note="; ".join(notes), params=params
+    )
 
 
 def _section_axes(axis: str) -> tuple[int, int]:

@@ -10,7 +10,7 @@ from __future__ import annotations
 import textwrap
 
 from . import model
-from .model import BuildPlan, fmt_tuple
+from .model import BuildPlan, fmt, fmt_tuple
 
 HEADER = '''"""build123d reconstruction of {source}.
 
@@ -66,6 +66,11 @@ def render(
         if op.emitted and not (drop_overlapping and op.status == model.OVERLAPS)
     ]
     out = [HEADER.format(source=plan.source, summary=_summary(plan, emitted)), ""]
+    dimensions = [
+        f"{name} = {fmt(value)}" for op in emitted for name, value in op.params.items()
+    ]
+    if dimensions:
+        out += ["# Dimensions of the recognised features, in millimetres.", *dimensions, ""]
     out.append(f"# {plan.stock_label}")
     out.extend(plan.stock_code)
 
