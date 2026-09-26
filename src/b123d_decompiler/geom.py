@@ -404,16 +404,20 @@ def sampled_overlap_volume(tool: Part, reference: Part, restorers, points: int =
     """
     import random
 
-    tool_box, part_box = tool.bounding_box(), reference.bounding_box()
+    # The part's box comes from its cached mesh: on a part of a thousand faces,
+    # asking the kernel for it again for every one of hundreds of tools was most of
+    # the time spent here.
+    mesh = _mesh_for(reference)
+    tool_box = tool.bounding_box()
     low = (
-        max(tool_box.min.X, part_box.min.X),
-        max(tool_box.min.Y, part_box.min.Y),
-        max(tool_box.min.Z, part_box.min.Z),
+        max(tool_box.min.X, float(mesh.low[0])),
+        max(tool_box.min.Y, float(mesh.low[1])),
+        max(tool_box.min.Z, float(mesh.low[2])),
     )
     high = (
-        min(tool_box.max.X, part_box.max.X),
-        min(tool_box.max.Y, part_box.max.Y),
-        min(tool_box.max.Z, part_box.max.Z),
+        min(tool_box.max.X, float(mesh.high[0])),
+        min(tool_box.max.Y, float(mesh.high[1])),
+        min(tool_box.max.Z, float(mesh.high[2])),
     )
     span = [high[k] - low[k] for k in range(3)]
     if min(span) <= 0:
@@ -433,7 +437,7 @@ def sampled_overlap_volume(tool: Part, reference: Part, restorers, points: int =
     candidates = [place for place in places if in_tool(place)]
     if not candidates:
         return 0.0
-    material = _mesh_for(reference).contains(candidates)
+    material = mesh.contains(candidates)
     shared = sum(
         1
         for place, solid in zip(candidates, material, strict=True)
