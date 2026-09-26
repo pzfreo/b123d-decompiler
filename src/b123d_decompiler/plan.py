@@ -308,7 +308,7 @@ def _verify(plan: BuildPlan, ctx: Context, overlaps: dict | None = None):
 
 def _is_exact_stock(label: str) -> bool:
     """Whether a stock is the part itself rather than a billet to carve."""
-    return label.startswith(("stock: sheet metal", "stock: thin wall"))
+    return label.startswith(("stock: sheet metal", "stock: thin wall", "stock: thin panel"))
 
 
 def _cylinder_catalogue(document: dict):

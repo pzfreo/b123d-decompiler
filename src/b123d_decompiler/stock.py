@@ -672,16 +672,20 @@ def _sheet_stocks(document: dict, ctx: Context) -> list:
     are flat or cylindrical gives the same kind of pieces. A part can have both, and
     which ends best is for the trials to say.
     """
+    from .panel import panel_stock
     from .sheet import MAIN_BODY_SHARE, sheet_metal_stock, thin_wall_stock
 
     found = []
-    for build in (sheet_metal_stock, thin_wall_stock):
+    for build in (sheet_metal_stock, thin_wall_stock, panel_stock):
         try:
             sheet = build(document, ctx)
             if sheet is None:
                 continue
             built = run_source(sheet[1], "part")
             if built is None or built.volume <= 0 or len(built.solids()) != 1:
+                continue
+            if "part = _pieces[0]" not in sheet[1]:
+                found.append(sheet)  # drawn as one body, not as pieces joined
                 continue
             pieces = run_source(
                 sheet[1][: sheet[1].index("part = _pieces[0]")] + ["part = Compound(_pieces)"],
