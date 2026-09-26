@@ -492,4 +492,111 @@ def build_plan(
     # Quiddity reports evidence, not history, so there is no recorded order to
     # recover; this one is what a bounding-box stock needs.
     plan.ops.sort(key=lambda op: (op.kind == "fuse", -(op.volume or 0.0)))
+    # Patterns name ops by position, so they are found once the order is final.
+    plan.patterns = _hole_patterns(plan, document)
     return plan
+
+
+#: How closely a hole must sit on its bolt circle, and at its share of the circle, to be
+#: drawn by the loop rather than on its own: in millimetres, and in degrees.
+PATTERN_TOLERANCE = 1e-3
+PATTERN_ANGLE = 0.05
+
+
+def _hole_patterns(plan: BuildPlan, document: dict) -> list:
+    """Bolt circles whose every hole is emitted identically, to be written as one loop.
+
+    Quiddity reports holes on a circle. They become a loop only when the loop draws
+    exactly what the separate holes did: every hole of the pattern emitted, with the
+    same dimensions and the same code but for where it sits, all opening on one plane,
+    at one radius, and evenly spaced.
+    """
+    import math
+
+    import numpy as np
+
+    found = []
+    holes = [
+        (position, op) for position, op in enumerate(plan.ops)
+        if op.family == "holes" and op.emitted and not op.speculative
+    ]
+    for number, pattern in enumerate((document.get("derived") or {}).get("hole_patterns") or ()):
+        centre = np.asarray(pattern.get("center") or (), dtype=float)
+        members = pattern.get("holes") or ()
+        if centre.shape != (3,) or len(members) < 3:
+            continue
+        axis = np.asarray(members[0]["axis"], dtype=float)
+        axis /= np.linalg.norm(axis)
+        chosen = []
+        for member in members:
+            spot = np.asarray(member["location"], dtype=float)
+            match = next(
+                (
+                    (position, op) for position, op in holes
+                    if op.code and np.linalg.norm(_mouth_origin(op) - spot) < PATTERN_TOLERANCE * 10
+                ),
+                None,
+            )
+            if match is None:
+                break
+            chosen.append((match, spot))
+        if len(chosen) != len(members):
+            continue
+        template = chosen[0][0][1]
+        if any(
+            _dimensions(op) != _dimensions(template)
+            or _without_origin(op) != _without_origin(template)
+            for (_position, op), _spot in chosen
+        ):
+            continue
+        spots = np.array([spot for _match, spot in chosen])
+        heights = (spots - centre) @ axis
+        if np.ptp(heights) > PATTERN_TOLERANCE:
+            continue
+        on_plane = centre + axis * heights[0]
+        radial = spots - on_plane
+        radii = np.linalg.norm(radial, axis=1)
+        if np.ptp(radii) > PATTERN_TOLERANCE or radii[0] < PATTERN_TOLERANCE:
+            continue
+        x_dir = radial[0] / radii[0]
+        y_dir = np.cross(axis, x_dir)
+        angles = sorted(math.degrees(math.atan2(r @ y_dir, r @ x_dir)) % 360 for r in radial)
+        pitch = 360 / len(angles)
+        if any(abs(a - k * pitch) > PATTERN_ANGLE for k, a in enumerate(angles)):
+            continue
+        found.append({
+            "ops": [position for (position, _op), _spot in chosen],
+            "center": tuple(float(v) for v in on_plane),
+            "axis": tuple(float(v) for v in axis),
+            "x_dir": tuple(float(v) for v in x_dir),
+            "radius": float(radii[0]),
+            "count": len(chosen),
+            "name": f"BOLT_CIRCLE_{number}",
+        })
+    return found
+
+
+def _mouth_origin(op):
+    """Where a hole op opens, read back from the plane its code places it on."""
+    import re
+
+    import numpy as np
+
+    match = re.search(r"_mouth = Plane\(origin=\(([^)]*)\)", op.code[0])
+    if not match:
+        return np.full(3, np.inf)
+    return np.asarray([float(v) for v in match.group(1).split(",")], dtype=float)
+
+
+def _dimensions(op) -> list:
+    """A hole's dimensions by role, without the hole's own name, to compare holes."""
+    prefix = f"HOLE_{op.index}_"
+    return sorted((name.removeprefix(prefix), round(value, 9)) for name, value in op.params.items())
+
+
+def _without_origin(op) -> list[str]:
+    """A hole op's code with where it sits and its own name taken out, to compare shapes."""
+    import re
+
+    prefix = f"HOLE_{op.index}_"
+    return [re.sub(r"origin=\([^)]*\), ", "", line).replace(prefix, "HOLE_") for line in op.code]

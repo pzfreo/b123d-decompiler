@@ -73,6 +73,9 @@ class BuildPlan:
     association: dict = field(default_factory=dict)
     stock_trials: list = field(default_factory=list)  # billets tried and how each ended
     timings: dict = field(default_factory=dict)  # seconds spent in each stage
+    #: Holes on a bolt circle, emitted as one loop: each {"ops": [positions in ops],
+    #: "center", "axis", "x_dir", "radius", "count", "name"}.
+    patterns: list = field(default_factory=list)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2)

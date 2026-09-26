@@ -65,9 +65,25 @@ def render(
         for op in plan.ops
         if op.emitted and not (drop_overlapping and op.status == model.OVERLAPS)
     ]
+    # Holes on a bolt circle are written once, as a loop, where the first of them was.
+    patterns = {}
+    followers = set()
+    for pattern in plan.patterns or ():
+        members = [plan.ops[position] for position in pattern["ops"]]
+        if not all(op in emitted for op in members):
+            continue
+        patterns[id(members[0])] = (pattern, members)
+        followers.update(id(op) for op in members[1:])
     out = [HEADER.format(source=plan.source, summary=_summary(plan, emitted)), ""]
     dimensions = [
-        f"{name} = {fmt(value)}" for op in emitted for name, value in op.params.items()
+        f"{name} = {fmt(value)}"
+        for op in emitted
+        if id(op) not in followers
+        for name, value in op.params.items()
+    ]
+    dimensions += [
+        f"{pattern['name']}_DIAMETER = {fmt(2 * pattern['radius'])}"
+        for pattern, _members in patterns.values()
     ]
     if dimensions:
         out += ["# Dimensions of the recognised features, in millimetres.", *dimensions, ""]
@@ -84,7 +100,12 @@ def render(
         ]
     body = []
     for op in emitted:
+        if id(op) in followers:
+            continue
         body.append("")
+        if id(op) in patterns:
+            body.extend(_pattern_source(*patterns[id(op)]))
+            continue
         flag = "  <-- " + op.note if op.status == model.OVERLAPS else ""
         body.append(f"# {op.family} #{op.index}: {op.label}{flag}")
         if op.note and op.status != model.OVERLAPS:
@@ -118,3 +139,24 @@ def render(
         "",
     ]
     return "\n".join(out)
+
+
+def _pattern_source(pattern: dict, members) -> list[str]:
+    """One loop drawing every hole of a bolt circle, from the first hole's code."""
+    template = members[0]
+    indices = ", ".join(f"#{op.index}" for op in members)
+    lines = [
+        (
+            f"# holes {indices}: {pattern['count']} x {template.label}, "
+            f"on a \u00d8{fmt(2 * pattern['radius'], 3)} bolt circle"
+        ),
+        (
+            f"_circle = Plane(origin={fmt_tuple(pattern['center'])}, "
+            f"x_dir={fmt_tuple(pattern['x_dir'])}, z_dir={fmt_tuple(pattern['axis'])})"
+        ),
+        f"for _at in PolarLocations({pattern['name']}_DIAMETER / 2, {pattern['count']}).locations:",
+        "    _mouth = _circle.location * _at",
+    ]
+    lines += ["    " + line for line in template.code[1:]]
+    lines.append("    part -= tool")
+    return lines
