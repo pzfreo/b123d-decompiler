@@ -84,7 +84,10 @@ def sheet_metal_stock(document: dict, ctx: Context) -> tuple[str, list[str]] | N
     code = _joinable(code)
     if code is None:
         return None
-    code += _join_source()
+    code += _join_source(
+        "Flanges and bends that meet the rest only through faces quiddity did not "
+        "place come out as separate bits; the body is kept and they are left out."
+    )
     bends = len(record.get("bends") or ())
     label = (
         f"stock: sheet metal {fmt(thickness, 3)} thick, "

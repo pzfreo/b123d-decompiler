@@ -1798,6 +1798,20 @@ def _empty_inner_radius(anchor, along, across, sideways, radius, arc, run, ctx: 
     return 0.0 if best < radius * 1e-6 else best
 
 
+#: Outlines smaller than this, in mm\u00b2, are refused when they cross themselves.
+#: Corners alone can make a larger outline with arcs look self-touching when it is
+#: not, and those trims are sound; the failures were all in profiles far below this.
+TINY_OUTLINE_AREA = 1.0
+
+
+def _crosses_when_tiny(corners) -> bool:
+    """Whether a small outline, drawn through its corners, crosses itself."""
+    import shapely
+
+    polygon = shapely.Polygon(corners)
+    return not polygon.is_valid and abs(polygon.area) < TINY_OUTLINE_AREA
+
+
 def face_profile_source(
     face, outward, variable: str = "_prof", places: int = 4
 ) -> tuple[list[str], tuple] | None:
@@ -1825,6 +1839,12 @@ def face_profile_source(
     if outline is None:
         return None
     segments, _approximated = outline
+    # The outline as the script will draw it, at the places it is written to, must
+    # still be a simple polygon. A tiny profile can cross itself once rounded, and the
+    # kernel's face repair then succeeds in one run and fails in the next.
+    corners = [tuple(round(v, places) for v in segment[1]) for segment in segments]
+    if len(corners) < 3 or _crosses_when_tiny(corners):
+        return None
     drawn = []
     for segment in segments:
         if segment[0] == "line":
@@ -1921,6 +1941,11 @@ def propose_face_trims(
             passed_over += 1
             continue
         segments, approximated = outline
+        # As in face_profile_source: a tiny outline must not cross itself as written.
+        corners = [tuple(round(v, 4) for v in segment[1]) for segment in segments]
+        if len(corners) < 3 or _crosses_when_tiny(corners):
+            passed_over += 1
+            continue
 
         drawn = []
         for segment in segments:

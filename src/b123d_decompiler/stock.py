@@ -659,34 +659,39 @@ def stock_candidates(ctx: Context, document: dict) -> list[tuple[str, list[str]]
     ordered = (turned_first + rest)[:STOCK_TRIALS]
     # So is the folded sheet, when quiddity reads the part as sheet metal: it is the
     # part itself, not a billet to cut down, and no outline comes close to it.
-    sheet = _sheet_stock(document, ctx)
-    if sheet is not None:
-        ordered = [sheet] + ordered[: STOCK_TRIALS - 1]
+    sheets = _sheet_stocks(document, ctx)
+    if sheets:
+        ordered = sheets + ordered[: max(STOCK_TRIALS - len(sheets), 1)]
     return ordered or [_envelope_stock(ctx)]
 
 
-def _sheet_stock(document: dict, ctx: Context):
-    """The part drawn from its sheet or its walls, if it builds one sound solid.
+def _sheet_stocks(document: dict, ctx: Context) -> list:
+    """The part drawn from its sheet and from its walls, each that builds one body.
 
-    A sheet-metal record gives the flanges and bends; failing that, a thin-walled
-    record whose walls are flat or cylindrical gives the same kind of pieces.
+    A sheet-metal record gives the flanges and bends; a thin-walled record whose walls
+    are flat or cylindrical gives the same kind of pieces. A part can have both, and
+    which ends best is for the trials to say.
     """
     from .sheet import MAIN_BODY_SHARE, sheet_metal_stock, thin_wall_stock
 
+    found = []
     for build in (sheet_metal_stock, thin_wall_stock):
         try:
             sheet = build(document, ctx)
             if sheet is None:
                 continue
             built = run_source(sheet[1], "part")
+            if built is None or built.volume <= 0 or len(built.solids()) != 1:
+                continue
+            pieces = run_source(
+                sheet[1][: sheet[1].index("part = _pieces[0]")] + ["part = Compound(_pieces)"],
+                "part",
+            )
         except Exception:  # noqa: BLE001 - a sheet that will not build leaves the billets
             continue
-        if built is None or built.volume <= 0 or len(built.solids()) != 1:
-            continue
-        pieces_volume = run_source(sheet[1][: sheet[1].index("part = _pieces[0]")] + ["part = Compound(_pieces)"], "part").volume
-        if built.volume >= MAIN_BODY_SHARE * pieces_volume * 0.99 or build is sheet_metal_stock:
-            return sheet
-    return None
+        if built.volume >= MAIN_BODY_SHARE * pieces.volume * 0.99:
+            found.append(sheet)
+    return found
 
 
 def stock_source(ctx: Context, document: dict) -> tuple[str, list[str]]:
