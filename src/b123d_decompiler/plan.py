@@ -339,6 +339,10 @@ def _cylinder_catalogue(document: dict):
 STOCK_TIE = 0.005
 
 #: Most seconds to spend carrying further billets through once the first has finished.
+#: This and the allowance below are CPU seconds of this process, not wall-clock time:
+#: under a busy batch the wall clock ran slow for every trial alike and a part got
+#: fewer billets than it did alone (cgb225 lost its best one and 0.046 IoU), where
+#: its own CPU time is the same however busy the machine is.
 TRIAL_BUDGET = 600.0
 
 #: Further billets get this multiple of the first trial's time, but at least the floor.
@@ -371,17 +375,19 @@ def _best_stock(
 
     trials = []
     overlaps: dict = {}
-    started = time.monotonic()
+    started = time.process_time()
     allowance = TRIAL_BUDGET
+    first_cpu = None
     for label, code in stocks:
         # The first billet is always carried through; the rest only while there is time,
         # and not at all once one has ended close enough to the part to leave little to
         # find. On sixteen parts, stopping at GOOD_ENOUGH gave up 0.003 IoU in all.
-        if trials and time.monotonic() - started > allowance:
+        if trials and time.process_time() - started > allowance:
             break
         if trials and max(entry[0] for entry in trials) >= good_enough:
             break
         began = time.monotonic()
+        began_cpu = time.process_time()
         trial = copy.deepcopy(plan)
         trial.stock_label, trial.stock_code = label, list(code)
         finished = _verify(trial, ctx, overlaps)
@@ -397,12 +403,14 @@ def _best_stock(
             score = 0.0
         simplicity = 1 if "turned" in label else _complexity(code)
         trials.append((score, simplicity, trial, round(time.monotonic() - began, 1)))
-        if len(trials) == 1:
+        if first_cpu is None:
             # Further billets get a multiple of what the first one took, within the
             # overall ceiling. On twenty-two parts every winning billet was found
             # within 3.4 times the first trial's own time.
-            first = trials[0][3]
-            allowance = first + min(TRIAL_BUDGET, max(TRIAL_FLOOR, TRIAL_FACTOR * first))
+            first_cpu = time.process_time() - began_cpu
+            allowance = first_cpu + min(
+                TRIAL_BUDGET, max(TRIAL_FLOOR, TRIAL_FACTOR * first_cpu)
+            )
     best = max(entry[0] for entry in trials)
     tied = [entry for entry in trials if entry[0] >= best - STOCK_TIE]
     chosen = min(tied, key=lambda entry: entry[1])[2]
