@@ -95,3 +95,17 @@ def test_good_enough_of_zero_tries_one_billet_only(tmp_path):
     script, plan = tmp_path / "part.py", tmp_path / "plan.json"
     assert main([str(step), "-o", str(script), "--plan", str(plan), "--good-enough", "0"]) == 0
     assert len(json.loads(plan.read_text())["stock_trials"]) == 1
+
+
+def test_parallel_parts_share_the_cores_between_them(monkeypatch):
+    """Each part's process gets its share of the cores, and a user's setting stands."""
+    from b123d_decompiler.cli import THREAD_VARIABLES, _child_environment
+
+    for name in THREAD_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    shared = _child_environment(jobs=6, cores=18)
+    assert all(shared[name] == "3" for name in THREAD_VARIABLES)
+    assert _child_environment(jobs=32, cores=18)["QUIDDITY_THREADS"] == "1"
+    assert "QUIDDITY_THREADS" not in _child_environment(jobs=1, cores=18)
+    monkeypatch.setenv("QUIDDITY_THREADS", "2")
+    assert _child_environment(jobs=6, cores=18)["QUIDDITY_THREADS"] == "2"

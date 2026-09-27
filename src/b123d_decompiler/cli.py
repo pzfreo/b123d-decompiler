@@ -112,6 +112,36 @@ def cmd_stock(args) -> int:
     return 0
 
 
+#: Thread pools a part's process may size to the whole machine: quiddity's cap on
+#: OCCT's pool, and the numeric libraries' own.
+THREAD_VARIABLES = (
+    "QUIDDITY_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "TBB_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+)
+
+
+def _child_environment(jobs: int, cores: int | None = None) -> dict[str, str]:
+    """The environment for one part's process when `jobs` run at once.
+
+    Left alone, every process sizes its thread pools to the whole machine, and several
+    together oversubscribe it: six concurrent recognitions on 18 cores each took six
+    times as long as one alone, and parts that finish comfortably by themselves ran
+    out of time. Each process is given its share of the cores instead. A value the
+    user has set is kept, and a single job changes nothing.
+    """
+    environment = dict(os.environ)
+    if jobs <= 1:
+        return environment
+    share = str(max((cores or os.cpu_count() or 1) // jobs, 1))
+    for name in THREAD_VARIABLES:
+        environment.setdefault(name, share)
+    return environment
+
+
 def _run_isolated(step: Path, out_dir: Path, args) -> dict:
     """Run one part in a child process and read back what it wrote.
 
@@ -146,7 +176,7 @@ def _run_isolated(step: Path, out_dir: Path, args) -> dict:
         try:
             done = subprocess.run(
                 command + extra, capture_output=True, text=True, check=False,
-                timeout=args.part_timeout,
+                timeout=args.part_timeout, env=_child_environment(args.jobs),
             )
         except subprocess.TimeoutExpired:
             # A part that never finishes is a result too, and without a limit it holds
