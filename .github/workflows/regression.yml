@@ -30,7 +30,7 @@ jobs:
           ref: e44aa94227421d2a60545c95a1b6de8e929c1b97
           path: quiddity-corpus
           sparse-checkout: tests/corpus
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: "3.14"
       - run: uv sync --frozen
