@@ -1636,7 +1636,7 @@ def _ray_depth(segments, origin, first, second, outward, most: float, ctx: Conte
     # Both limits verification will apply: a share of the trim itself, and a share of
     # the whole part. Meeting only the first lets a large trim run deep, fail the second,
     # and be thrown away whole, where a shallower one would have been kept.
-    area, allowance = region.area, _TRIM_PART_SHARE * float(ctx.part.volume)
+    area, allowance = region.area, _TRIM_PART_SHARE * ctx.volume
     stops = sorted({float(h) for hits in rays for h in hits if 0 < h < most} | {most})
     depth = 0.0
     for candidate in stops:
@@ -1811,7 +1811,7 @@ def _empty_inner_radius(anchor, along, across, sideways, radius, arc, run, ctx: 
     )
     solid = _mesh_for(ctx.part).contains(points)
     slice_volume = 0.5 * (arc[1] - arc[0]) * radius**2 * (run[1] - run[0])
-    allowance = _TRIM_PART_SHARE * float(ctx.part.volume)
+    allowance = _TRIM_PART_SHARE * ctx.volume
     best = None
     for step in range(1, _BORE_STOPS + 1):
         stop = radius * (1.0 - step / _BORE_STOPS)

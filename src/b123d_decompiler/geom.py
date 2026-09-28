@@ -38,6 +38,10 @@ class Context:
 
     def __init__(self, part: Part):
         self.part = part
+        #: The part's volume, measured once. The kernel integrates over every face each
+        #: time it is asked, which on a thousand-face part is over a second a call, and
+        #: the checks ask for it once or twice for every op they judge.
+        self.volume = float(part.volume)
         box = part.bounding_box()
         self.bb_min = (box.min.X, box.min.Y, box.min.Z)
         self.bb_max = (box.max.X, box.max.Y, box.max.Z)
