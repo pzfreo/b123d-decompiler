@@ -6,35 +6,41 @@ name: Regression
 #
 # Billet trials are budgeted in CPU seconds, so a runner slower than the machine the
 # baseline came from can try fewer billets. If the baseline turns out not to reproduce
-# here without a code change, replace it with the summary this job uploads.
+# here without a code change, replace it with the summary this job uploads. quiddity's
+# corpus is pinned to a commit, as the dataset is to a revision, so the inputs cannot
+# change under the baseline either.
 
 on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   regression:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           repository: pzfreo/quiddity
+          ref: e44aa94227421d2a60545c95a1b6de8e929c1b97
           path: quiddity-corpus
           sparse-checkout: tests/corpus
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10
         with:
           python-version: "3.14"
       - run: uv sync --frozen
       - name: Assemble the corpus
         run: uv run --with huggingface_hub python tools/regression_corpus.py quiddity-corpus corpus
       - name: Decompile and score
-        run: uv run b123d-decompile batch corpus -o results --jobs 2 --part-timeout 2700
+        run: uv run b123d-decompile batch corpus -o results --jobs 2 --part-timeout 3600
       - name: Compare with the baseline
         run: uv run python tools/compare_runs.py baselines/regression-ci-summary.csv results
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: regression-results

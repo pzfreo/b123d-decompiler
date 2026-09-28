@@ -231,7 +231,7 @@ uv run python tools/compare_runs.py baselines/realistic-summary.csv results/
 ```
 
 It exits non-zero when any part loses more than 0.005 IoU, stops scoring, or goes missing.
-CI runs the unit suite on every push, and every night decompiles the thirteen public parts
+CI runs the unit suite on every push to main and every pull request, and every night decompiles the thirteen public parts
 of the regression set (`tools/regression_corpus.py` fetches them from quiddity's test corpus
 and the CADGenBench dataset) and compares them with `baselines/regression-ci-summary.csv`.
 

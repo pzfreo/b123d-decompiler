@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import sys
 from pathlib import Path
 
@@ -29,7 +30,10 @@ def load(path: Path) -> dict[str, dict]:
 
 def _iou(row: dict | None) -> float | None:
     value = (row or {}).get("iou")
-    return float(value) if value not in (None, "") else None
+    if value in (None, ""):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 
 def compare(before: dict[str, dict], after: dict[str, dict], tolerance: float = TOLERANCE):
@@ -49,7 +53,9 @@ def compare(before: dict[str, dict], after: dict[str, dict], tolerance: float = 
         elif was is None and now is not None:
             improvements.append(f"{name}: was {old.get('status')}, now {now:.4f}")
         elif was is not None and now is not None:
-            change = now - was
+            # The summaries hold four places, so a drop of exactly the tolerance must
+            # not turn into a regression through floating-point noise.
+            change = round(now - was, 4)
             if change < -tolerance:
                 regressions.append(f"{name}: {was:.4f} -> {now:.4f} ({change:+.4f})")
             elif change > tolerance:
