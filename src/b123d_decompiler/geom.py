@@ -9,6 +9,7 @@ runs cannot disagree about what an op means.
 from __future__ import annotations
 
 import math
+from functools import cached_property
 
 from build123d import Part
 from OCP.BRepClass3d import BRepClass3d_SolidClassifier
@@ -38,10 +39,6 @@ class Context:
 
     def __init__(self, part: Part):
         self.part = part
-        #: The part's volume, measured once. The kernel integrates over every face each
-        #: time it is asked, which on a thousand-face part is over a second a call, and
-        #: the checks ask for it once or twice for every op they judge.
-        self.volume = float(part.volume)
         box = part.bounding_box()
         self.bb_min = (box.min.X, box.min.Y, box.min.Z)
         self.bb_max = (box.max.X, box.max.Y, box.max.Z)
@@ -49,6 +46,16 @@ class Context:
         #: How far a tool runs past the stock when a feature is open-ended.
         self.margin = max(self.diagonal * 0.05, 1.0)
         self._classifier = BRepClass3d_SolidClassifier(part.wrapped)
+
+    @cached_property
+    def volume(self) -> float:
+        """The part's volume, measured once and only if asked for.
+
+        The kernel integrates over every face each time it is asked, which on a
+        thousand-face part is over a second a call, and the checks ask once or twice for
+        every op they judge. A Context built only to classify points never asks.
+        """
+        return float(self.part.volume)
 
     def note_cylinders(self, cylinders) -> None:
         """Record the round features a turned treatment can sit on.
