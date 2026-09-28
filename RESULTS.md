@@ -14,7 +14,9 @@ uv run python tools/corpus_summary.py results/
 
 ## Result
 
-Measured on 28 September 2026 against quiddity 0.3.7, every corpus at f61621c. Medians are
+Measured on 28 September 2026 against quiddity 0.3.7: MFCAD++, holdout, realistic and the
+CADGenBench working half at 46ee65b, the CADGenBench holdout half at 894f50b (the later
+commit only adds an option those runs do not use). Medians are
 the ordinary median of the parts that scored. The rotational set is a subset of realistic.
 
 | measure | mfcadpp (40) | holdout (33) | rotational (5) | realistic (28) | CADGenBench edit, working half (16) |
@@ -58,6 +60,11 @@ gains come from:
   be dropped with every body but the largest; they are now kept when each is the part's own
   material. cgb207 went from 0.362 to 0.860, with half the script.
 - **Billet trials timed in CPU seconds**, so a busy batch gets the same trials as a quiet one.
+- **Speed.** Checking the cuts asked the kernel for the part's own volume once or twice per
+  op, over a second a time on a thousand-face part: 550 of cgb248's 1,458 s of planning. It is
+  now measured once. cgb248 plans in 811 s and cgb206 in 926 s, both trying more billets
+  than before. At eight parts at a time, every CADGenBench part now finishes inside 30
+  minutes, and the working half's median planning time fell from 388 s to 229 s (#2).
 
 ### What moved from 24 to 26 September
 
@@ -92,7 +99,6 @@ No part scored worse than it did on 24 September. The gains came from:
 | cgb249 | CADGenBench | 0.531 | volute casing; its walls are not of constant thickness, so none of the wall routes applies |
 | cgb243 | CADGenBench | 0.570 | cast housing, walls from under 1.5 mm to over 10 mm. Of its 221,000 mm³ of extra material, 57,000 is a core sealed on every side, which quiddity cannot yet describe (pzfreo/quiddity#775); the rest is recesses open to the outside that the billet and trims do not clear |
 | cgb207 | CADGenBench | 0.860 | now drawn from its walls; the 11 % still missing is joints and bosses that are not paired walls, which a wall stock does not add |
-| cgb202, 206, 211, 248 | CADGenBench holdout | time out | large parts; planning runs past the 30 minute limit when the machine is shared (206 finishes, at 0.786, with fewer parts at once) |
 
 Rebuilding the cored housing as "rebuild minus part" was tried and does not work: OCCT
 cannot take the part from a rebuild whose trims lie on the part's own faces, and returns
@@ -141,12 +147,12 @@ extra material, and the worst have distinct causes, listed under "Open problems"
 
 ### Holdout half
 
-Run once on 28 September, at f61621c against quiddity 0.3.7, with the other corpora running
-alongside. Twelve of the sixteen scored: mean 0.731, median 0.862, four at 0.9 or above. The
-other four are large parts that ran past the 30 minute limit (see "Open problems"). These
-parts were chosen to differ from the working half, and the spread says so: every one but a
-turned part was built from an outline billet, no wall stock won a trial, and the worst three
-carry 59 to 417 % extra material.
+Run on 28 September at 894f50b against quiddity 0.3.7, eight parts at a time. All sixteen
+scored: mean 0.704, median 0.770, four at 0.9 or above. The four large parts that used to run
+past the 30 minute limit now finish (see "Speed" below). These parts were chosen to differ
+from the working half, and the spread says so: every one but a turned part was built from an
+outline billet, no wall stock won a trial, and the worst four carry 67 to 417 % extra
+material.
 
 | part | IoU | missing | extra | stock | surface quiddity associated |
 |---|---|---|---|---|---|
@@ -156,16 +162,16 @@ carry 59 to 417 % extra material.
 | cgb214 | 0.9268 | 0.40 % | 7.5 % | outline | 28 % |
 | cgb229 | 0.8874 | 0.01 % | 12.7 % | outline | 54 % |
 | cgb217 | 0.8618 | 2.49 % | 13.2 % | outline | 69 % |
+| cgb206 | 0.7865 | 0.58 % | 26.4 % | outline | 36 % |
 | cgb242 | 0.7853 | 12.96 % | 10.8 % | outline | 41 % |
+| cgb248 | 0.7554 | 0.29 % | 32.0 % | outline | 21 % |
 | cgb240 | 0.6633 | 0.64 % | 49.8 % | outline | 43 % |
 | cgb204 | 0.6578 | 0.42 % | 51.4 % | outline | 100 % |
 | cgb244 | 0.6246 | 0.50 % | 59.3 % | outline | 19 % |
+| cgb202 | 0.5957 | 0.45 % | 67.1 % | outline | 54 % |
+| cgb211 | 0.3554 | 0.20 % | 180.8 % | outline | 81 % |
 | cgb250 | 0.3097 | 0.53 % | 221.2 % | outline | 22 % |
 | cgb208 | 0.1902 | 1.59 % | 417.3 % | turned | 38 % |
-| cgb202 | timed out | | | | |
-| cgb206 | timed out | | | | |
-| cgb211 | timed out | | | | |
-| cgb248 | timed out | | | | |
 
 ## Why realistic parts were hard (analysis of 24 September and earlier)
 

@@ -258,7 +258,7 @@ build123d's Too Tall Toby set, CADGenBench and Gramel.
 
 The last column is the hardest. It is half of the CADGenBench editing corpus, held back as a
 target of IoU 0.9 for every part; the other half is run only as a check, and scores a median
-of 0.862 on the twelve of its sixteen that finish in time. Sheet-metal, thin-walled and
+of 0.770 across all sixteen. Sheet-metal, thin-walled and
 free-form panel parts are drawn from quiddity's body-level records rather than cut from a
 billet; what remains is mostly material left behind in a cast housing, an impeller and a
 volute. Full numbers and the reasons in `RESULTS.md`.
