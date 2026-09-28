@@ -666,7 +666,7 @@ def stock_candidates(ctx: Context, document: dict) -> list[tuple[str, list[str]]
 
 
 def _sheet_stocks(document: dict, ctx: Context) -> list:
-    """The part drawn from its sheet and from its walls, each that builds one body.
+    """The part drawn from its sheet and from its walls, each that builds as a solid.
 
     A sheet-metal record gives the flanges and bends; a thin-walled record whose walls
     are flat or cylindrical gives the same kind of pieces. A part can have both, and
@@ -682,7 +682,7 @@ def _sheet_stocks(document: dict, ctx: Context) -> list:
             if sheet is None:
                 continue
             built = run_source(sheet[1], "part")
-            if built is None or built.volume <= 0 or len(built.solids()) != 1:
+            if built is None or built.volume <= 0 or not built.solids():
                 continue
             if "part = _pieces[0]" not in sheet[1]:
                 found.append(sheet)  # drawn as one body, not as pieces joined

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import math
 
-from .geom import Context
+from .geom import Context, cross
 from .model import fmt, fmt_tuple
 
 #: Places the sheet's coordinates are written to. The flanges and bends must meet
@@ -212,8 +212,85 @@ def _bend_source(first, second) -> list[str] | None:
     ]
 
 
+def _torus_source(first, second) -> list[str] | None:
+    """The wall between two tori on one axis and one centre circle, as revolve source.
+
+    A wall that turns a corner while it bends, as a blend between two bends does, has
+    tori for its faces. Its section in a plane through the axis is a sector of a ring
+    about the centre circle, and the wall is that sector revolved through the face's
+    sweep, just as a bend is its ring sector extruded.
+    """
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepTools import BRepTools
+    from OCP.GeomAbs import GeomAbs_Torus
+
+    def torus(face):
+        surface = BRepAdaptor_Surface(face.wrapped)
+        return surface.Torus() if surface.GetType() == GeomAbs_Torus else None
+
+    def span(face):
+        u_low, u_high, _v_low, _v_high = BRepTools.UVBounds_s(face.wrapped)
+        return u_high - u_low
+
+    if span(second) > span(first):
+        first, second = second, first
+    shape, other = torus(first), torus(second)
+    if shape is None or other is None:
+        return None
+    position = shape.Position()
+    centre = position.Location().Coord()
+    axis = position.Direction().Coord()
+    if (
+        abs(shape.MajorRadius() - other.MajorRadius()) > 1e-4
+        or other.Position().Location().Distance(position.Location()) > 1e-4
+        or not other.Position().Direction().IsParallel(position.Direction(), 1e-6)
+    ):
+        return None
+    major = shape.MajorRadius()
+    inner = min(shape.MinorRadius(), other.MinorRadius())
+    outer = max(shape.MinorRadius(), other.MinorRadius())
+    if outer >= major:
+        return None
+    x_dir, y_dir = position.XDirection().Coord(), position.YDirection().Coord()
+    u_low, u_high, v_low, v_high = BRepTools.UVBounds_s(first.wrapped)
+    radial = tuple(math.cos(u_low) * x_dir[k] + math.sin(u_low) * y_dir[k] for k in range(3))
+    normal = cross(radial, axis)
+    turn = cross(x_dir, y_dir)
+    plane = (
+        f"_bend = Plane(origin={fmt_tuple(centre, PLACES)}, x_dir={fmt_tuple(radial, PLACES)}, "
+        f"z_dir={fmt_tuple(normal, PLACES)})"
+    )
+    if v_high - v_low >= 2 * math.pi - 1e-6:
+        section = (
+            f"Pos({fmt(major, PLACES)}, 0) * (Circle({fmt(outer, PLACES)}) - "
+            f"Circle({fmt(inner, PLACES)}))"
+        )
+    else:
+
+        def rim(radius, angle):
+            return (major + radius * math.cos(angle), radius * math.sin(angle))
+
+        middle = (v_low + v_high) / 2
+        outer_start, outer_mid, outer_end = (rim(outer, a) for a in (v_low, middle, v_high))
+        inner_end, inner_mid, inner_start = (rim(inner, a) for a in (v_high, middle, v_low))
+        section = (
+            f"make_face(ThreePointArc({fmt_tuple(outer_start, PLACES)}, {fmt_tuple(outer_mid, PLACES)}, "
+            f"{fmt_tuple(outer_end, PLACES)}) + Line({fmt_tuple(outer_end, PLACES)}, {fmt_tuple(inner_end, PLACES)}) "
+            f"+ ThreePointArc({fmt_tuple(inner_end, PLACES)}, {fmt_tuple(inner_mid, PLACES)}, "
+            f"{fmt_tuple(inner_start, PLACES)}) + Line({fmt_tuple(inner_start, PLACES)}, {fmt_tuple(outer_start, PLACES)}))"
+        )
+    sweep = min(math.degrees(u_high - u_low), 360.0)
+    return [
+        plane,
+        (
+            f"_pieces.append(revolve(_bend * {section}, "
+            f"Axis({fmt_tuple(centre, PLACES)}, {fmt_tuple(turn, PLACES)}), {fmt(sweep, PLACES)}))"
+        ),
+    ]
+
+
 #: A thin-walled body is drawn from its walls only when this much of the paired area
-#: is flat or cylindrical, the two kinds of wall that can be drawn exactly.
+#: is flat, cylindrical or toroidal, the kinds of wall that can be drawn exactly.
 THIN_WALL_COVERAGE = 0.97
 
 
@@ -270,15 +347,27 @@ def thin_wall_stock(document: dict, ctx: Context) -> tuple[str, list[str]] | Non
                 continue
             code += piece
             drawable += face.area
+        elif kind == "TORUS" and faces[inside].geom_type.name == "TORUS":
+            piece = _torus_source(face, faces[inside])
+            if piece is None:
+                continue
+            code += piece
+            drawable += face.area
     if total <= 0 or drawable / total < THIN_WALL_COVERAGE or len(code) <= 2:
         return None
     code = _joinable(code)
     if code is None:
         return None
-    code += _join_source(
-        "Walls quiddity paired that meet the rest only through faces it did not pair "
-        "come out as separate bits; the body is kept and they are left out."
-    )
+    if _apart_but_real(code, ctx):
+        code += _join_source() + [
+            "# Some walls meet the rest only through faces quiddity did not pair, such as",
+            "# the fillets where a tube stands on a wall, and stay separate bodies.",
+        ]
+    else:
+        code += _join_source(
+            "Walls quiddity paired that meet the rest only through faces it did not pair "
+            "come out as separate bits; the body is kept and they are left out."
+        )
     label = f"stock: thin wall {fmt(thickness, 3)} thick, {len(record['face_pairs'])} walls"
     return label, code
 
@@ -286,6 +375,34 @@ def thin_wall_stock(document: dict, ctx: Context) -> tuple[str, list[str]] | Non
 #: When pieces do not all join, the largest solid is kept only if it holds this much of
 #: the volume; otherwise the pieces are not a body at all and the stock is not offered.
 MAIN_BODY_SHARE = 0.9
+
+#: A wall body that stays apart from the rest is kept when this much of it is material
+#: of the part: it is then a wall quiddity paired, cut off only by the joint between.
+#: Walls drawn from their faces overshoot a little where they meet, so even the main
+#: body of a good rebuild is not wholly the part (92 % on a 3 mm shell with 1.5 mm
+#: joint fillets); a body well short of that is not a wall of this part at all.
+APART_INSIDE_SHARE = 0.85
+
+
+def _apart_but_real(code: list[str], ctx: Context) -> bool:
+    """True when the walls join into several bodies, each of them the part's own material.
+
+    Keeping only the largest body throws away whole walls whenever the joints between
+    them are shapes the thin-wall record does not pair. Those walls are still the part,
+    and leaving them out costs far more than keeping them as bodies of their own.
+    """
+    from .geom import material_volume, run_source
+
+    try:
+        joined = run_source(code + _join_source(), "part")
+    except Exception:  # noqa: BLE001 - a join that will not build keeps the old rule
+        return False
+    bodies = sorted(joined.solids(), key=lambda body: -body.volume)
+    if len(bodies) < 2 or bodies[0].volume >= MAIN_BODY_SHARE * joined.volume:
+        return False
+    return all(
+        material_volume(body, ctx.part) >= APART_INSIDE_SHARE * body.volume for body in bodies[1:]
+    )
 
 
 def _join_source(note: str | None = None) -> list[str]:
