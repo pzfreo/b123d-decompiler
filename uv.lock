@@ -44,7 +44,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "build123d", specifier = ">=0.9,<0.12" },
-    { name = "quiddity", specifier = ">=0.3.7" },
+    { name = "quiddity", specifier = ">=0.3.8" },
     { name = "shapely", specifier = ">=2.0" },
 ]
 
@@ -949,7 +949,7 @@ wheels = [
 
 [[package]]
 name = "quiddity"
-version = "0.3.7"
+version = "0.3.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "build123d" },
@@ -960,9 +960,9 @@ dependencies = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/35/53/5958fffc76abbbc9b3c12c51ebd1334b5e0058b1ed4e7a399181c686aad4/quiddity-0.3.7.tar.gz", hash = "sha256:4366572d44d4ef4dd6a40995df5491af944af06fabb1fa026efc3d050230face", size = 17400210, upload-time = "2026-09-27T22:25:57.81Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8a/2d/8c311a97b4f07e98339cd9a51ca3a7e5fdcf1ce7ab2fb1649ddf60c3319d/quiddity-0.3.8.tar.gz", hash = "sha256:0d8133f6460f8de7cee2bba47d2ad451b0dd540c2001bd7b35827b49940de637", size = 19723562, upload-time = "2026-09-28T17:17:24.588Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cb/e1/e57cb591cb981feeb9698e9333e7c0d9f4f186ecc8af12f286ada43a82b8/quiddity-0.3.7-py3-none-any.whl", hash = "sha256:4233d7e59f37d70090d002543466f8ce241d6df9c33d7e7316758191bf9a0ddb", size = 555675, upload-time = "2026-09-27T22:25:55.745Z" },
+    { url = "https://files.pythonhosted.org/packages/af/c3/d2c381e348f69b8b1c6e58b52538160585f344ebfc622c16a151d1df181f/quiddity-0.3.8-py3-none-any.whl", hash = "sha256:5d6ac45274f99e8b8451246a9e924aac62ae3feecccdc0ec316e96908f70ca4b", size = 555953, upload-time = "2026-09-28T17:17:22.653Z" },
 ]
 
 [[package]]
