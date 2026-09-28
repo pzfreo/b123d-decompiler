@@ -4,8 +4,8 @@ Five corpora. Adapters were developed against **mfcadpp** and never run against
 **mfcadpp_holdout** until they were finished, so the holdout says whether they generalise.
 The **realistic** set is 28 parts assembled from four sources with nothing synthetic about
 them. The **CADGenBench edit** set is half of that benchmark's 32-part editing split, held as
-a target of IoU 0.9 for every part; the other half is kept unseen. Row-level numbers are in
-`baselines/`.
+a target of IoU 0.9 for every part; the other half is run only as a check, never worked on.
+Row-level numbers are in `baselines/`.
 
 ```bash
 uv run b123d-decompile batch path/to/corpus -o results/
@@ -14,33 +14,54 @@ uv run python tools/corpus_summary.py results/
 
 ## Result
 
-Measured on 26 September 2026 against quiddity 0.3.5: MFCAD++, holdout and realistic at
-e8859c0, the CADGenBench working half at e46d433 (one commit earlier; the only change since
-checks faces the trim rays refuse the slow way, which changed no part on the other three
-corpora for the worse). Medians are the ordinary median of the parts that scored.
+Measured on 28 September 2026 against quiddity 0.3.7, every corpus at f61621c. Medians are
+the ordinary median of the parts that scored. The rotational set is a subset of realistic.
 
 | measure | mfcadpp (40) | holdout (33) | rotational (5) | realistic (28) | CADGenBench edit, working half (16) |
 |---|---|---|---|---|---|
-| parts that scored | 40 | 33 | 4 | 27 | 16 |
-| IoU mean | 0.995 | 0.999 | 0.968 | 0.906 | 0.762 |
-| IoU median | 0.999 | 1.000 | 0.985 | 0.971 | 0.836 |
-| parts at IoU 0.9 or above | 40 | 33 | 4 | 21 | 5 |
-| missing material, mean | 0.19 % | 0.03 % | 0.20 % | 0.17 % | 1.04 % |
-| extra material, mean | 0.3 % | 0.1 % | 3.3 % | 16.7 % | 42.7 % |
+| parts that scored | 40 | 33 | 5 | 28 | 16 |
+| IoU mean | 0.995 | 0.999 | 0.962 | 0.907 | 0.805 |
+| IoU median | 0.999 | 1.000 | 0.971 | 0.968 | 0.870 |
+| parts at IoU 0.9 or above | 40 | 33 | 5 | 22 | 6 |
+| missing material, mean | 0.19 % | 0.03 % | 0.13 % | 0.14 % | 1.38 % |
+| extra material, mean | 0.3 % | 0.1 % | 4.0 % | 16.4 % | 30.2 % |
 
-The previous measurement, on 24 September against quiddity 0.3.3, was:
+The rotational mean is lower only because the threaded connector, at 0.938, now scores and
+is counted; the other four are unchanged.
+
+The two previous measurements were on 26 September against quiddity 0.3.5, and on 24
+September against quiddity 0.3.3:
 
 | measure | mfcadpp (40) | holdout (33) | rotational (5) | realistic (28) | CADGenBench edit, working half (16) |
 |---|---|---|---|---|---|
-| parts that scored | 40 | 33 | 4 | 24 | 14 |
-| IoU mean | 0.969 | 0.955 | 0.956 | 0.713 | 0.469 |
-| IoU median | 0.997 | 1.000 | 0.964 | 0.818 | 0.416 |
-| parts at IoU 0.9 or above | 37 | 29 | 3 | 10 | 2 |
-| extra material, mean | 3.4 % | 9.1 % | 4.7 % | 149 % | 782 % |
+| parts that scored, 26 Sep | 40 | 33 | 4 | 27 | 16 |
+| IoU mean, 26 Sep | 0.995 | 0.999 | 0.968 | 0.906 | 0.762 |
+| parts at IoU 0.9 or above, 26 Sep | 40 | 33 | 4 | 21 | 5 |
+| parts that scored, 24 Sep | 40 | 33 | 4 | 24 | 14 |
+| IoU mean, 24 Sep | 0.969 | 0.955 | 0.956 | 0.713 | 0.469 |
+| parts at IoU 0.9 or above, 24 Sep | 37 | 29 | 3 | 10 | 2 |
 
-### What moved
+### What moved since 26 September
 
-No part scores worse than it did on 24 September. The gains come from:
+No part scores worse than it did on 26 September; MFCAD++ and holdout are unchanged. The
+gains come from:
+
+- **quiddity 0.3.7.** The threaded connector is recognised again (0.938), and a thin-walled
+  body no longer crashes recognition.
+- **A through hole stops at the next wall.** Its extension past the wall it is drilled in
+  could run on through real material as long as that was under 2 % of the extension's own
+  volume; on cgb205 one hole took 11,059 mm³ of the part. It may now touch no more than a
+  0.1 mm slice of its own section. cgb205 went from 0.846 to 0.917.
+- **Toroidal walls, and walls that stay apart.** A thin-walled body whose walls turn corners
+  has torus pairs, now drawn as ring sectors revolved about their axis. Walls that meet the
+  rest only through fillets quiddity does not pair, such as tubes standing on a wall, used to
+  be dropped with every body but the largest; they are now kept when each is the part's own
+  material. cgb207 went from 0.362 to 0.860, with half the script.
+- **Billet trials timed in CPU seconds**, so a busy batch gets the same trials as a quiet one.
+
+### What moved from 24 to 26 September
+
+No part scored worse than it did on 24 September. The gains came from:
 
 - **Choosing the billet by carrying several through to a finished rebuild.** Outlines are
   drawn exactly in 2D (shapely) as lines and arcs, stepped billets are offered alongside
@@ -67,11 +88,15 @@ No part scores worse than it did on 24 September. The gains come from:
 
 | part | corpus | now | why |
 |---|---|---|---|
-| cgb-threaded_connector_109 | rotational and realistic | not recognised | a quiddity 0.3.5 bug (pzfreo/quiddity#754), fixed on its main branch; 0.938 there |
-| cgb207 | CADGenBench | 0.362 | 3 mm moulded shell whose walls meet through fillets quiddity does not pair |
 | cgb203 | CADGenBench | 0.400 | impeller: seven swept blades; quiddity now reports the pattern, the decompiler has no way to build a blade |
-| cgb249 | CADGenBench | 0.492 | volute casing; its walls are not of constant thickness, so none of the new routes applies |
-| cgb243 | CADGenBench | 0.558 | not yet diagnosed |
+| cgb249 | CADGenBench | 0.531 | volute casing; its walls are not of constant thickness, so none of the wall routes applies |
+| cgb243 | CADGenBench | 0.570 | cast housing, walls from under 1.5 mm to over 10 mm. Of its 221,000 mm³ of extra material, 57,000 is a core sealed on every side, which quiddity cannot yet describe (pzfreo/quiddity#775); the rest is recesses open to the outside that the billet and trims do not clear |
+| cgb207 | CADGenBench | 0.860 | now drawn from its walls; the 11 % still missing is joints and bosses that are not paired walls, which a wall stock does not add |
+| cgb202, 206, 211, 248 | CADGenBench holdout | time out | large parts; planning runs past the 30 minute limit when the machine is shared (206 finishes, at 0.786, with fewer parts at once) |
+
+Rebuilding the cored housing as "rebuild minus part" was tried and does not work: OCCT
+cannot take the part from a rebuild whose trims lie on the part's own faces, and returns
+nothing or a wrong volume even with a fuzzy tolerance.
 
 ## Realistic parts, by source
 
@@ -79,42 +104,68 @@ No part scores worse than it did on 24 September. The gains come from:
 |---|---|---|---|---|
 | NIST CTC/FTC | 10 | 10 | 0.962 | 0.987 |
 | build123d Too Tall Toby | 13 | 13 | 0.983 | 1.000 |
-| CADGenBench | 2 | 1 | 0.900 | 0.900 |
+| CADGenBench | 2 | 2 | 0.920 | 0.938 |
 | Gramel | 3 | 3 | 1.000 | 1.000 |
 
 NIST was the weakest source on 24 September, at a median of 0.533; the mesh-counted trims
-and ray-cast depths took it to 0.962. The one CADGenBench part not scored is the threaded
-connector (see above).
+and ray-cast depths took it to 0.962.
 
 ## CADGenBench editing corpus
 
 The 32 parts of `splits/editing32.txt` were sorted and split alternately. The working half is
-the table below; the holdout half (202, 204, 206, 208, 211, 214, 217, 224, 229, 231, 240, 242,
-244, 246, 248, 250) has not been run since the split. The goal for the working half is IoU
-0.9 for every part.
+the table below and was worked on; the holdout half was run only to check the work
+generalises. The goal for the working half is IoU 0.9 for every part.
 
-| part | first run | 24 September | now | missing | extra | stock | surface quiddity associated |
-|---|---|---|---|---|---|---|---|
-| cgb215 | crashed | 0.9457 | 0.9463 | 0.40 % | 5.2 % | outline | 49 % |
-| cgb209 | 0.4353 | 0.7746 | 0.9347 | 0.06 % | 6.9 % | outline | 60 % |
-| cgb218 | 0.9024 | 0.9017 | 0.9322 | 0.04 % | 7.2 % | outline | 25 % |
-| cgb247 | 0.3450 | 0.4103 | 0.9102 | 0.46 % | 9.4 % | outline | 41 % |
-| cgb245 | 0.0674 | 0.1383 | 0.9008 | 5.21 % | 5.2 % | thin wall | 100 % |
-| cgb230 | 0.1511 | 0.2332 | 0.8976 | 0.02 % | 11.4 % | outline | 53 % |
-| cgb238 | 0.3198 | 0.5825 | 0.8526 | 1.48 % | 15.6 % | outline | 32 % |
-| cgb205 | 0.4944 | 0.4219 | 0.8457 | 4.21 % | 13.3 % | outline | 56 % |
-| cgb225 | 0.1691 | 0.7653 | 0.8270 | 0.27 % | 20.6 % | outline | 21 % |
-| cgb241 | 0.0116 | 0.0113 | 0.8247 | 1.34 % | 19.6 % | thin panel | 100 % |
-| cgb201 | crashed | 0.4621 | 0.7994 | 0.52 % | 24.4 % | outline | 40 % |
-| cgb212 | 0.3985 | crashed | 0.7108 | 0.63 % | 39.8 % | outline | 48 % |
-| cgb243 | crashed | 0.3782 | 0.5577 | 1.29 % | 77.0 % | outline | 59 % |
-| cgb249 | 0.3414 | 0.3634 | 0.4916 | 0.25 % | 102.9 % | outline | 6 % |
-| cgb203 | 0.1818 | 0.1845 | 0.3996 | 0.00 % | 150.3 % | outline | 30 % |
-| cgb207 | crashed | crashed | 0.3621 | 0.40 % | 175.1 % | outline | 91 % |
+| part | first run | 24 September | 26 September | now | missing | extra | stock | surface quiddity associated |
+|---|---|---|---|---|---|---|---|---|
+| cgb215 | crashed | 0.9457 | 0.9463 | 0.9551 | 0.41 % | 4.3 % | outline | 49 % |
+| cgb209 | 0.4353 | 0.7746 | 0.9347 | 0.9347 | 0.06 % | 6.9 % | outline | 60 % |
+| cgb247 | 0.3450 | 0.4103 | 0.9102 | 0.9330 | 0.46 % | 6.7 % | outline | 42 % |
+| cgb218 | 0.9024 | 0.9017 | 0.9322 | 0.9322 | 0.04 % | 7.2 % | outline | 25 % |
+| cgb205 | 0.4944 | 0.4219 | 0.8457 | 0.9173 | 0.33 % | 8.7 % | outline | 56 % |
+| cgb245 | 0.0674 | 0.1383 | 0.9008 | 0.9008 | 5.21 % | 5.2 % | thin wall | 100 % |
+| cgb230 | 0.1511 | 0.2332 | 0.8976 | 0.8976 | 0.02 % | 11.4 % | outline | 56 % |
+| cgb238 | 0.3198 | 0.5825 | 0.8526 | 0.8789 | 1.33 % | 12.3 % | outline | 41 % |
+| cgb207 | crashed | crashed | 0.3621 | 0.8602 | 11.08 % | 3.4 % | thin wall | 92 % |
+| cgb225 | 0.1691 | 0.7653 | 0.8270 | 0.8301 | 0.27 % | 20.1 % | outline | 22 % |
+| cgb241 | 0.0116 | 0.0113 | 0.8247 | 0.8247 | 1.34 % | 19.6 % | thin panel | 100 % |
+| cgb201 | crashed | 0.4621 | 0.7994 | 0.7996 | 0.50 % | 24.4 % | outline | 43 % |
+| cgb212 | 0.3985 | crashed | 0.7108 | 0.7108 | 0.63 % | 39.8 % | outline | 72 % |
+| cgb243 | crashed | 0.3782 | 0.5577 | 0.5697 | 0.13 % | 75.3 % | outline | 71 % |
+| cgb249 | 0.3414 | 0.3634 | 0.4916 | 0.5314 | 0.25 % | 87.7 % | outline | 30 % |
+| cgb203 | 0.1818 | 0.1845 | 0.3996 | 0.3996 | 0.00 % | 150.2 % | outline | 99 % |
 
-Five parts meet the target, against two on 24 September, and all sixteen now score; the mean
-went from 0.469 to 0.762. Four more are within 0.08 of it. What remains is still mostly
-extra material, and the four worst have distinct causes, listed under "Open problems".
+Six parts meet the target, against five on 26 September and two on 24 September; the mean
+went from 0.762 to 0.805. Four more are within 0.08 of it. What remains is still mostly
+extra material, and the worst have distinct causes, listed under "Open problems".
+
+### Holdout half
+
+Run once on 28 September, at f61621c against quiddity 0.3.7, with the other corpora running
+alongside. Twelve of the sixteen scored: mean 0.731, median 0.862, four at 0.9 or above. The
+other four are large parts that ran past the 30 minute limit (see "Open problems"). These
+parts were chosen to differ from the working half, and the spread says so: every one but a
+turned part was built from an outline billet, no wall stock won a trial, and the worst three
+carry 59 to 417 % extra material.
+
+| part | IoU | missing | extra | stock | surface quiddity associated |
+|---|---|---|---|---|---|
+| cgb224 | 0.9634 | 0.17 % | 3.6 % | outline | 73 % |
+| cgb231 | 0.9619 | 0.15 % | 3.8 % | outline | 35 % |
+| cgb246 | 0.9371 | 1.54 % | 5.1 % | outline | 43 % |
+| cgb214 | 0.9268 | 0.40 % | 7.5 % | outline | 28 % |
+| cgb229 | 0.8874 | 0.01 % | 12.7 % | outline | 54 % |
+| cgb217 | 0.8618 | 2.49 % | 13.2 % | outline | 69 % |
+| cgb242 | 0.7853 | 12.96 % | 10.8 % | outline | 41 % |
+| cgb240 | 0.6633 | 0.64 % | 49.8 % | outline | 43 % |
+| cgb204 | 0.6578 | 0.42 % | 51.4 % | outline | 100 % |
+| cgb244 | 0.6246 | 0.50 % | 59.3 % | outline | 19 % |
+| cgb250 | 0.3097 | 0.53 % | 221.2 % | outline | 22 % |
+| cgb208 | 0.1902 | 1.59 % | 417.3 % | turned | 38 % |
+| cgb202 | timed out | | | | |
+| cgb206 | timed out | | | | |
+| cgb211 | timed out | | | | |
+| cgb248 | timed out | | | | |
 
 ## Why realistic parts were hard (analysis of 24 September and earlier)
 

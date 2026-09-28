@@ -225,25 +225,25 @@ there is a real regression in an adapter.
 
 ## Where it stands
 
-Measured on 26 September 2026 against quiddity 0.3.5.
+Measured on 28 September 2026 against quiddity 0.3.7.
 
 | | mfcadpp (40) | holdout (33) | rotational (5) | realistic (28) | CADGenBench edit, working half (16) |
 |---|---|---|---|---|---|
-| IoU median | 0.999 | 1.000 | 0.985 | 0.971 | 0.836 |
-| parts at IoU 0.9 or above | 40 | 33 | 4 | 21 | 5 |
-| missing material, mean | 0.19 % | 0.03 % | 0.20 % | 0.17 % | 1.04 % |
-| extra material, mean | 0.3 % | 0.1 % | 3.3 % | 16.7 % | 42.7 % |
-| did not score | 0 | 0 | 1 | 1 | 0 |
+| IoU median | 0.999 | 1.000 | 0.971 | 0.968 | 0.870 |
+| parts at IoU 0.9 or above | 40 | 33 | 5 | 22 | 6 |
+| missing material, mean | 0.19 % | 0.03 % | 0.13 % | 0.14 % | 1.38 % |
+| extra material, mean | 0.3 % | 0.1 % | 4.0 % | 16.4 % | 30.2 % |
+| did not score | 0 | 0 | 0 | 0 | 0 |
 
 The first two are MFCAD++ benchmark blocks; adapters were developed against the first and
 never run against the second until they were finished, and the close medians say they
 generalise. The rotational five from Gramel and CADGenBench exercise the turned billet and the
 swept chamfers that nothing in MFCAD++ touches. The realistic set is 28 parts from NIST,
-build123d's Too Tall Toby set, CADGenBench and Gramel. The one part that did not score there
-fails recognition on quiddity 0.3.5, a bug fixed on quiddity's main branch.
+build123d's Too Tall Toby set, CADGenBench and Gramel.
 
 The last column is the hardest. It is half of the CADGenBench editing corpus, held back as a
-target of IoU 0.9 for every part, with the other half kept unseen. Sheet-metal, thin-walled
-and free-form panel parts are now drawn from quiddity's body-level records rather than cut
-from a billet; what remains is mostly material left behind on moulded shells, an impeller and
-a volute. Full numbers and the reasons in `RESULTS.md`.
+target of IoU 0.9 for every part; the other half is run only as a check, and scores a median
+of 0.862 on the twelve of its sixteen that finish in time. Sheet-metal, thin-walled and
+free-form panel parts are drawn from quiddity's body-level records rather than cut from a
+billet; what remains is mostly material left behind in a cast housing, an impeller and a
+volute. Full numbers and the reasons in `RESULTS.md`.
