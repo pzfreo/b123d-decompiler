@@ -1,0 +1,44 @@
+name: Regression
+
+# The thirteen public parts of the regression set, decompiled and compared part by part
+# with baselines/regression-ci-summary.csv. A part that loses more than 0.005 IoU, stops
+# scoring, or goes missing fails the run.
+#
+# Billet trials are budgeted in CPU seconds, so a runner slower than the machine the
+# baseline came from can try fewer billets. If the baseline turns out not to reproduce
+# here without a code change, replace it with the summary this job uploads.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: pzfreo/quiddity
+          path: quiddity-corpus
+          sparse-checkout: tests/corpus
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+      - run: uv sync --frozen
+      - name: Assemble the corpus
+        run: uv run --with huggingface_hub python tools/regression_corpus.py quiddity-corpus corpus
+      - name: Decompile and score
+        run: uv run b123d-decompile batch corpus -o results --jobs 2 --part-timeout 2700
+      - name: Compare with the baseline
+        run: uv run python tools/compare_runs.py baselines/regression-ci-summary.csv results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: regression-results
+          path: |
+            results/summary.csv
+            results/*/report.json
+            results/*/*.py

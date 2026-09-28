@@ -285,8 +285,8 @@ def test_the_billet_kept_is_the_one_that_ended_best(tmp_path):
     Which billet ends best cannot be read off the billet, so the choice is made on
     the finished rebuilds. Within a small tie margin the simpler billet wins.
     """
-    from b123d_decompiler.plan import STOCK_TIE
     from b123d_decompiler.pipeline import decompile
+    from b123d_decompiler.plan import STOCK_TIE
 
     step = tmp_path / "boss.step"
     export_step(boss(), str(step))
