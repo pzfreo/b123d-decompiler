@@ -15,8 +15,9 @@ uv run python tools/corpus_summary.py results/
 ## Result
 
 Measured on 28 September 2026 against quiddity 0.3.7: MFCAD++, holdout, realistic and the
-CADGenBench working half at 46ee65b, the CADGenBench holdout half at 894f50b (the later
-commit only adds an option those runs do not use). Medians are
+CADGenBench working half on #10's code before its review fix (which only makes the volume
+measurement lazy), about fourteen parts at a time; the CADGenBench holdout half at 894f50b,
+eight parts at a time (#9 only adds an option these runs do not use). Medians are
 the ordinary median of the parts that scored. The rotational set is a subset of realistic.
 
 | measure | mfcadpp (40) | holdout (33) | rotational (5) | realistic (28) | CADGenBench edit, working half (16) |
@@ -62,9 +63,11 @@ gains come from:
 - **Billet trials timed in CPU seconds**, so a busy batch gets the same trials as a quiet one.
 - **Speed.** Checking the cuts asked the kernel for the part's own volume once or twice per
   op, over a second a time on a thousand-face part: 550 of cgb248's 1,458 s of planning. It is
-  now measured once. cgb248 plans in 811 s and cgb206 in 926 s, both trying more billets
-  than before. At eight parts at a time, every CADGenBench part now finishes inside 30
-  minutes, and the working half's median planning time fell from 388 s to 229 s (#2).
+  now measured once. Timed one part at a time, cgb248 plans in 811 s and cgb206 in 926 s,
+  both trying more billets than before. At eight parts at a time every CADGenBench part now
+  finishes inside the 30 minute limit, though narrowly: cgb202 took 29 min 15 s from start to
+  finish. At about fourteen parts at a time cgb202, 206 and 211 still run out of time. The
+  working half's median planning time fell from 388 s to 229 s (#2).
 
 ### What moved from 24 to 26 September
 
