@@ -391,7 +391,7 @@ def _best_stock(
         # and not at all once one has ended close enough to the part to leave little to
         # find. On sixteen parts, stopping at GOOD_ENOUGH gave up 0.003 IoU in all.
         if max_trials is not None:
-            if len(trials) >= max_trials:
+            if trials and len(trials) >= max_trials:
                 break
         elif trials and time.process_time() - started > allowance:
             break
@@ -446,7 +446,9 @@ def build_plan(
     began = time.monotonic()
     ctx = Context(local_part)
     ctx.note_cylinders(_cylinder_catalogue(document))
-    stocks = stock_candidates(ctx, document)
+    # A trial count is asked for when the run must come out the same whatever the
+    # machine's speed, so the billet search gives up its clock too.
+    stocks = stock_candidates(ctx, document, timed=max_trials is None)
     stock_seconds = time.monotonic() - began
     stock_label, stock_code = stocks[0]
     plan = BuildPlan(

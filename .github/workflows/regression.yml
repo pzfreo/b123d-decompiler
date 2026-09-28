@@ -4,10 +4,11 @@ name: Regression
 # with baselines/regression-ci-summary.csv. A part that loses more than 0.005 IoU, stops
 # scoring, or goes missing fails the run.
 #
-# Billet trials are normally budgeted in CPU seconds, so a runner slower than the
-# machine the baseline came from would try fewer billets and could choose differently.
-# `--trials 6` tries a fixed number instead, and the baseline was measured the same
-# way, so the run comes out the same on any machine. quiddity's
+# Billet trials are normally budgeted in CPU seconds, so a runner's speed would decide
+# how many billets it tries. `--trials 6` takes the clock away: it tries every billet
+# offered (STOCK_TRIALS in stock.py is 6) and searches for them untimed. The kernel
+# still gives slightly different answers on Linux and macOS, so the baseline is taken
+# from this job's own output, not from a run on a developer's machine. quiddity's
 # corpus is pinned to a commit, as the dataset is to a revision, so the inputs cannot
 # change under the baseline either.
 

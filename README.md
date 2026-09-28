@@ -234,8 +234,9 @@ It exits non-zero when any part loses more than 0.005 IoU, stops scoring, or goe
 CI runs the unit suite on every push to main and every pull request, and every night decompiles the thirteen public parts
 of the regression set (`tools/regression_corpus.py` fetches them from quiddity's test corpus
 and the CADGenBench dataset) and compares them with `baselines/regression-ci-summary.csv`. That run passes `--trials 6`,
-which tries a fixed number of billets instead of as many as fit in a CPU-time allowance, so
-its result does not depend on how fast the machine is.
+which tries a fixed number of billets, and searches for them, without a clock, so its result
+does not depend on how fast the machine is. The kernel's answers still differ slightly
+between Linux and macOS, so that baseline comes from the CI runner itself.
 
 ## Where it stands
 
