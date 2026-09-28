@@ -354,7 +354,11 @@ GOOD_ENOUGH = 0.98
 
 
 def _best_stock(
-    plan: BuildPlan, stocks, ctx: Context, good_enough: float | None = None
+    plan: BuildPlan,
+    stocks,
+    ctx: Context,
+    good_enough: float | None = None,
+    max_trials: int | None = None,
 ) -> BuildPlan:
     """Carry each candidate billet through to a finished rebuild and keep the best.
 
@@ -365,6 +369,10 @@ def _best_stock(
     best are a tie, and the billet that is simpler to draw takes it, since that is the
     reading closer to how the part was designed. Every billet tried, and how it ended,
     is kept in the plan.
+
+    How many billets are tried is normally a matter of CPU time, which makes the answer
+    depend on the machine. `max_trials` replaces the clock with a count, for runs that
+    must come out the same anywhere.
     """
     import copy
 
@@ -382,7 +390,10 @@ def _best_stock(
         # The first billet is always carried through; the rest only while there is time,
         # and not at all once one has ended close enough to the part to leave little to
         # find. On sixteen parts, stopping at GOOD_ENOUGH gave up 0.003 IoU in all.
-        if trials and time.process_time() - started > allowance:
+        if max_trials is not None:
+            if len(trials) >= max_trials:
+                break
+        elif trials and time.process_time() - started > allowance:
             break
         if trials and max(entry[0] for entry in trials) >= good_enough:
             break
@@ -430,6 +441,7 @@ def build_plan(
     verify: bool = True,
     trim_faces: bool = True,
     good_enough: float | None = None,
+    max_trials: int | None = None,
 ) -> BuildPlan:
     began = time.monotonic()
     ctx = Context(local_part)
@@ -480,7 +492,9 @@ def build_plan(
 
     proposed = time.monotonic()
     if verify:
-        plan = _best_stock(plan, stocks, ctx, GOOD_ENOUGH if good_enough is None else good_enough)
+        plan = _best_stock(
+            plan, stocks, ctx, GOOD_ENOUGH if good_enough is None else good_enough, max_trials
+        )
     else:
         _accept_unverified(plan)
     # A folded sheet built from quiddity's sheet-metal record is that record modelled.

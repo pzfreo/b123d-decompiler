@@ -4,9 +4,10 @@ name: Regression
 # with baselines/regression-ci-summary.csv. A part that loses more than 0.005 IoU, stops
 # scoring, or goes missing fails the run.
 #
-# Billet trials are budgeted in CPU seconds, so a runner slower than the machine the
-# baseline came from can try fewer billets. If the baseline turns out not to reproduce
-# here without a code change, replace it with the summary this job uploads. quiddity's
+# Billet trials are normally budgeted in CPU seconds, so a runner slower than the
+# machine the baseline came from would try fewer billets and could choose differently.
+# `--trials 6` tries a fixed number instead, and the baseline was measured the same
+# way, so the run comes out the same on any machine. quiddity's
 # corpus is pinned to a commit, as the dataset is to a revision, so the inputs cannot
 # change under the baseline either.
 
@@ -37,7 +38,7 @@ jobs:
       - name: Assemble the corpus
         run: uv run --with huggingface_hub python tools/regression_corpus.py quiddity-corpus corpus
       - name: Decompile and score
-        run: uv run b123d-decompile batch corpus -o results --jobs 2 --part-timeout 3600
+        run: uv run b123d-decompile batch corpus -o results --jobs 2 --trials 6 --part-timeout 3600
       - name: Compare with the baseline
         run: uv run python tools/compare_runs.py baselines/regression-ci-summary.csv results
       - uses: actions/upload-artifact@v7

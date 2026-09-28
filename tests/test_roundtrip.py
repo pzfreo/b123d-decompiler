@@ -355,3 +355,22 @@ def test_a_thin_walled_part_is_rebuilt_from_its_walls(tmp_path):
     assert "THICKNESS = 2" in source
     report = analyse(step, tmp_path / "tray.py", tmp_path / "tray.rebuilt.step")
     assert report["iou"] > 0.99
+
+
+def test_a_trial_count_replaces_the_clock(tmp_path):
+    """With a count, exactly that many billets are tried, however quick they are.
+
+    Without one, how many fit depends on the machine's speed, so a slower machine can
+    choose a different billet. A count makes the run come out the same anywhere.
+    """
+    from b123d_decompiler.pipeline import decompile
+
+    step = tmp_path / "boss.step"
+    export_step(boss(), str(step))
+    everything, _ = decompile(step, tmp_path / "all.py", good_enough=1.1)
+    offered = len(everything.stock_trials)
+    assert offered >= 2  # the boss offers several billets, so the count has work to do
+    limited, _ = decompile(step, tmp_path / "one.py", good_enough=1.1, max_trials=1)
+    assert len(limited.stock_trials) == 1
+    again, _ = decompile(step, tmp_path / "again.py", good_enough=1.1, max_trials=offered)
+    assert [t["stock"] for t in again.stock_trials] == [t["stock"] for t in everything.stock_trials]

@@ -233,7 +233,9 @@ uv run python tools/compare_runs.py baselines/realistic-summary.csv results/
 It exits non-zero when any part loses more than 0.005 IoU, stops scoring, or goes missing.
 CI runs the unit suite on every push to main and every pull request, and every night decompiles the thirteen public parts
 of the regression set (`tools/regression_corpus.py` fetches them from quiddity's test corpus
-and the CADGenBench dataset) and compares them with `baselines/regression-ci-summary.csv`.
+and the CADGenBench dataset) and compares them with `baselines/regression-ci-summary.csv`. That run passes `--trials 6`,
+which tries a fixed number of billets instead of as many as fit in a CPU-time allowance, so
+its result does not depend on how fast the machine is.
 
 ## Where it stands
 

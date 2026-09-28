@@ -59,6 +59,7 @@ def cmd_decompile(args) -> int:
         verify=not args.no_verify,
         trim_faces=not args.no_trim,
         good_enough=args.good_enough,
+        max_trials=args.trials,
     )
     print(f"{script}", file=sys.stderr)
     _report_plan(plan, sys.stderr)
@@ -100,6 +101,7 @@ def cmd_part(args) -> int:
         Path(args.step), Path(args.output), samples=args.samples,
         keep_frame=args.keep_frame, drop_overlapping=args.drop_overlapping,
         trim_faces=not args.no_trim, verify=not args.no_verify, good_enough=args.good_enough,
+        max_trials=args.trials,
     )
     return 0
 
@@ -161,6 +163,8 @@ def _run_isolated(step: Path, out_dir: Path, args) -> dict:
         command.append("--no-trim")
     if args.good_enough is not None:
         command += ["--good-enough", str(args.good_enough)]
+    if args.trials is not None:
+        command += ["--trials", str(args.trials)]
 
     report = out_dir / step.stem / "report.json"
     report.unlink(missing_ok=True)  # so a report left by an earlier run is never read back
@@ -297,6 +301,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="skip per-op validation (faster, no diagnostics)")
     one.add_argument("--good-enough", type=float, default=None,
                         help="stop trying further billets once one ends at least this close to the part (IoU, default 0.98; 0 tries one billet only)")
+    one.add_argument("--trials", type=int, default=None,
+                     help="try up to this many billets whatever the time, so the result does not depend on the machine (default: as many as fit in a CPU-time allowance)")
     one.add_argument("--no-trim", action="store_true",
                      help="model only recognised features, without trimming the stock "
                           "back to faces no feature claimed")
@@ -322,6 +328,8 @@ def build_parser() -> argparse.ArgumentParser:
     three.add_argument("--drop-overlapping", action="store_true")
     three.add_argument("--good-enough", type=float, default=None,
                         help="stop trying further billets once one ends at least this close to the part (IoU, default 0.98; 0 tries one billet only)")
+    three.add_argument("--trials", type=int, default=None,
+                     help="try up to this many billets whatever the time, so the result does not depend on the machine (default: as many as fit in a CPU-time allowance)")
     three.add_argument("--no-trim", action="store_true")
     three.add_argument("--jobs", type=int, default=max((os.cpu_count() or 4) // 2, 1),
                        help="parts to run at once (each already has its own process)")
@@ -337,6 +345,8 @@ def build_parser() -> argparse.ArgumentParser:
     part.add_argument("--drop-overlapping", action="store_true")
     part.add_argument("--good-enough", type=float, default=None,
                         help="stop trying further billets once one ends at least this close to the part (IoU, default 0.98; 0 tries one billet only)")
+    part.add_argument("--trials", type=int, default=None,
+                     help="try up to this many billets whatever the time, so the result does not depend on the machine (default: as many as fit in a CPU-time allowance)")
     part.add_argument("--no-trim", action="store_true")
     part.add_argument("--no-verify", action="store_true")
     part.set_defaults(func=cmd_part)

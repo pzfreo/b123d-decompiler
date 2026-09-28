@@ -27,11 +27,12 @@ def decompile(
     verify: bool = True,
     trim_faces: bool = True,
     good_enough: float | None = None,
+    max_trials: int | None = None,
 ) -> tuple[BuildPlan, str]:
     document, _caller, local = recognise(str(step_path))
     plan = build_plan(
         document, local, step_path.name, verify=verify, trim_faces=trim_faces,
-        good_enough=good_enough,
+        good_enough=good_enough, max_trials=max_trials,
     )
     source = render(
         plan,
