@@ -172,12 +172,14 @@ def _best_closure(boundary, closure, geometry, origin, run, u_dir, low, high, ct
     return choice
 
 
-def _empty_reach(piece_code, most: float, ctx: Context) -> float:
+def _empty_reach(piece_code, most: float, ctx: Context, allowance: float | None = None) -> float:
     """How far a tool can be carried on past the end of its feature through empty space.
 
     `piece_code(length)` is the source for just the extension, that many units long.
     The whole of it is tried first, since that is the common case, and failing that
     the farthest length that stays empty in the reference is found by halving.
+    `allowance`, when given, also caps the material the extension may touch in absolute
+    terms, so a long extension cannot pass through a real wall on the relative share.
     """
     def clean(length: float) -> bool:
         try:
@@ -185,7 +187,10 @@ def _empty_reach(piece_code, most: float, ctx: Context) -> float:
             volume = float(tool.volume)
             if volume <= 0:
                 return False
-            return material_volume(tool, ctx.part) <= _OPEN_END_TOLERANCE * volume
+            limit = _OPEN_END_TOLERANCE * volume
+            if allowance is not None:
+                limit = min(limit, allowance)
+            return material_volume(tool, ctx.part) <= limit
         except Exception:  # noqa: BLE001 - an extension that will not build is not taken
             return False
 
@@ -222,6 +227,9 @@ def _open_end_reach(boundary, closure, side, origin, run, u_dir, at, sign, most,
 #: An open end's extension may touch this share of its own volume in material and
 #: still count as running through space: the recess wall and the part's face coincide.
 _OPEN_END_TOLERANCE = 0.02
+
+#: How deep a slice of its own section a through hole's extension may cut into material.
+_HOLE_GRAZE = 0.1
 
 
 def section_recess(feature: dict, ctx: Context) -> Op | None:
@@ -329,11 +337,14 @@ def hole(feature: dict, ctx: Context) -> Op | None:
             return code
 
         exit_point = tuple(location[k] + axis[k] * depth for k in range(3))
+        # The bore may graze material where its wall meets the part's face, but no
+        # more than a thin slice of its own section: anything more is a wall beyond.
+        allowance = math.pi * radius**2 * _HOLE_GRAZE
         before = _empty_reach(
-            piece(location, _negate(axis)), start - low_extent + ctx.margin, ctx
+            piece(location, _negate(axis)), start - low_extent + ctx.margin, ctx, allowance
         )
         after = _empty_reach(
-            piece(exit_point, axis), high_extent - (start + depth) + ctx.margin, ctx
+            piece(exit_point, axis), high_extent - (start + depth) + ctx.margin, ctx, allowance
         )
         offset = -before
         length = before + depth + after
