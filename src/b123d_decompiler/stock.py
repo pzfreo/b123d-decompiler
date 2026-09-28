@@ -368,6 +368,10 @@ SLICE_LIMIT = 120
 #: Seconds to spend building outline billets before settling for what else there is.
 STOCK_BUDGET = 240.0
 
+#: The child search's limit when no clock is wanted: long enough never to stop a search
+#: that is making progress, there only for a kernel call that never returns.
+UNTIMED_SEARCH_LIMIT = 1800.0
+
 def _slice_gaps(part: Part, index: int, ctx: Context):
     """Where the part's geometry changes along an axis: its vertex positions.
 
@@ -455,7 +459,7 @@ MOST_EXTRUSIONS = 8
 BUILT_COMBINATIONS = 10
 
 
-def _silhouette_stock(ctx: Context) -> list[tuple[str, list[str], float]]:
+def _silhouette_stock(ctx: Context, timed: bool = True) -> list[tuple[str, list[str], float]]:
     """The billet the part's own outlines cut out: ranked by counting, chosen by measuring.
 
     Every outline, a shadow and a stepped billet along each axis, is scored against
@@ -470,6 +474,10 @@ def _silhouette_stock(ctx: Context) -> list[tuple[str, list[str], float]]:
     smallest. Drawing an outline takes a second or two, so the most plausible few are
     built, measured, and the one with the least volume per extrusion that holds the
     whole part is kept.
+
+    Building stops after STOCK_BUDGET seconds, or, when `timed` is false, only after
+    BUILT_COMBINATIONS, so that which billets are offered does not depend on the
+    machine's speed.
     """
     from .geom import _mesh_for
     from .outlines import OutlineEstimator
@@ -517,7 +525,7 @@ def _silhouette_stock(ctx: Context) -> list[tuple[str, list[str], float]]:
     scored.sort(key=lambda entry: entry[0])
     drawable = [chosen for _cost, chosen in scored]
 
-    stop_at = time.monotonic() + STOCK_BUDGET
+    stop_at = time.monotonic() + STOCK_BUDGET if timed else math.inf
     built, tried = [], 0
     for chosen in drawable:
         if tried >= BUILT_COMBINATIONS or time.monotonic() > stop_at:
@@ -544,7 +552,7 @@ def _silhouette_stock(ctx: Context) -> list[tuple[str, list[str], float]]:
     return built
 
 
-def _isolated_silhouette_stock(ctx: Context):
+def _isolated_silhouette_stock(ctx: Context, timed: bool = True):
     """The silhouette billet, searched for in a child process with a hard time limit.
 
     The search is the one place where this tool hands the kernel shapes it built itself
@@ -568,11 +576,10 @@ def _isolated_silhouette_stock(ctx: Context):
         command = [
             sys.executable, "-m", "b123d_decompiler.cli", "_stock",
             str(shape_path), str(answer_path),
-        ]
+        ] + ([] if timed else ["--untimed"])
+        limit = STOCK_BUDGET + 60.0 if timed else UNTIMED_SEARCH_LIMIT
         try:
-            subprocess.run(
-                command, capture_output=True, check=False, timeout=STOCK_BUDGET + 60.0
-            )
+            subprocess.run(command, capture_output=True, check=False, timeout=limit)
         except subprocess.TimeoutExpired:
             return []
         if not answer_path.exists():
@@ -581,7 +588,7 @@ def _isolated_silhouette_stock(ctx: Context):
     return [(entry["label"], entry["code"], entry["volume"]) for entry in answer or []]
 
 
-def silhouette_stock_from_file(shape_path: str, answer_path: str) -> None:
+def silhouette_stock_from_file(shape_path: str, answer_path: str, timed: bool = True) -> None:
     """The child's half of the above: read the part, search, write what it found."""
     import json
     from pathlib import Path
@@ -600,7 +607,7 @@ def silhouette_stock_from_file(shape_path: str, answer_path: str) -> None:
     else:
         part = Compound(TopoDS.Compound_s(shape))
     try:
-        found = _silhouette_stock(Context(part))
+        found = _silhouette_stock(Context(part), timed)
     except Exception:  # noqa: BLE001 - no billet is an answer, the parent falls back
         found = []
     answer = [
@@ -614,7 +621,9 @@ def silhouette_stock_from_file(shape_path: str, answer_path: str) -> None:
 STOCK_TRIALS = 6
 
 
-def stock_candidates(ctx: Context, document: dict) -> list[tuple[str, list[str]]]:
+def stock_candidates(
+    ctx: Context, document: dict, timed: bool = True
+) -> list[tuple[str, list[str]]]:
     """The billets worth trying, most plausible first, as (label, code).
 
     Which billet ends best cannot be read off the billet: it depends on how much of
@@ -643,7 +652,7 @@ def stock_candidates(ctx: Context, document: dict) -> list[tuple[str, list[str]]
             own = None
         if own is not None:
             candidates.append((own[1], own[0]))
-    for label, code, volume in _isolated_silhouette_stock(ctx):
+    for label, code, volume in _isolated_silhouette_stock(ctx, timed):
         candidates.append((volume, (label, code)))
     candidates.sort(key=lambda entry: _drawing_cost(*entry))
     # Two billets of the same volume are the same billet drawn two ways, and trying

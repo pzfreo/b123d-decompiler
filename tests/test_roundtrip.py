@@ -355,3 +355,24 @@ def test_a_thin_walled_part_is_rebuilt_from_its_walls(tmp_path):
     assert "THICKNESS = 2" in source
     report = analyse(step, tmp_path / "tray.py", tmp_path / "tray.rebuilt.step")
     assert report["iou"] > 0.99
+
+
+def test_a_trial_count_replaces_the_clock(tmp_path, monkeypatch):
+    """With a count, that many billets are tried however long they take.
+
+    Without one, how many fit depends on the machine's speed, so a slower machine can
+    choose a different billet. The allowance is shrunk to nothing here so that the
+    clock, left in charge, would stop after the first billet.
+    """
+    from b123d_decompiler import plan
+    from b123d_decompiler.pipeline import decompile
+
+    monkeypatch.setattr(plan, "TRIAL_BUDGET", 0.0)
+    monkeypatch.setattr(plan, "TRIAL_FLOOR", 0.0)
+    step = tmp_path / "boss.step"
+    export_step(boss(), str(step))
+    timed, _ = decompile(step, tmp_path / "timed.py", good_enough=1.1)
+    assert len(timed.stock_trials) == 1
+    counted, _ = decompile(step, tmp_path / "counted.py", good_enough=1.1, max_trials=3)
+    assert len(counted.stock_trials) >= 2  # the boss offers several billets
+    assert len(counted.stock_trials) <= 3
