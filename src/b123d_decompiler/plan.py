@@ -119,7 +119,7 @@ def _spend_trim_budget(plan: BuildPlan, ctx: Context) -> None:
     part forty-two of them each sat just inside the limit and between them took most of
     the part away. Spend a fixed share of the part on tracing, cheapest cuts first.
     """
-    budget = TRIM_BUDGET_SHARE * ctx.part.volume
+    budget = TRIM_BUDGET_SHARE * ctx.volume
     candidates = sorted(
         (op for op in plan.ops if op.speculative and op.status == model.OK),
         key=lambda op: op.overlap or 0.0,
@@ -167,18 +167,22 @@ def _reject_destructive(
         ),
     )
     part = stock
+    # The part's volume is carried from one op to the next rather than asked again:
+    # on a large part each asking integrates over every face.
+    volume = float(part.volume)
     for position in order:
         op = plan.ops[position]
         tool = tools.get(position)
         if tool is None:
             continue
         try:
-            before = float(part.volume)
+            before = volume
             # As the script does it: without tidying faces after each boolean, which on
             # a heavily cut part can run on long after the cut itself has finished.
             with SkipClean():
                 candidate = part - tool if op.kind == "cut" else part + tool
-            if not candidate.solids() or candidate.volume <= 0.0:
+            after = float(candidate.volume) if candidate.solids() else 0.0
+            if after <= 0.0:
                 raise ValueError("the part would be left empty")
             # A boolean can succeed, keep the volume and still leave a solid the kernel
             # calls invalid, typically a cut whose face lands on one of the part's own.
@@ -189,7 +193,7 @@ def _reject_destructive(
             # A cut cannot take away more than its own tool, and a fuse cannot add
             # more. When the kernel says otherwise the boolean has come apart, and
             # the sequence has to go on without it.
-            moved = abs(before - float(candidate.volume))
+            moved = abs(before - after)
             if moved > float(tool.volume) * 1.5 + 1e-6:
                 raise ValueError(
                     f"it moved {moved:.4g} mm\u00b3 with a tool of only {tool.volume:.4g}"
@@ -204,7 +208,7 @@ def _reject_destructive(
                 filter(None, [op.note, f"not applied: {type(error).__name__}: {error}"])
             )
             continue
-        part = candidate
+        part, volume = candidate, after
     return part
 
 
@@ -288,11 +292,11 @@ def _verify(plan: BuildPlan, ctx: Context, overlaps: dict | None = None):
         op.overlap = overlaps[key]
         if (
             op.overlap / op.volume > overlap_limit
-            or op.overlap > part_limit * ctx.part.volume
+            or op.overlap > part_limit * ctx.volume
         ):
             share = (
                 f"cuts {op.overlap:.3g} mm\u00b3 "
-                f"({100 * op.overlap / ctx.part.volume:.2f}% of the part) "
+                f"({100 * op.overlap / ctx.volume:.2f}% of the part) "
                 "out of material it keeps"
             )
             op.status = model.UNPROVED if op.speculative else model.OVERLAPS
